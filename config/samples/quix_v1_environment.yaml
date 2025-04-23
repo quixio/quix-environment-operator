@@ -1,0 +1,12 @@
+apiVersion: quix.io/v1
+kind: Environment
+metadata:
+  name: test-env
+spec:
+  id: test
+  labels:
+    environment-type: development
+    team: engineering
+  annotations:
+    description: "Test environment for engineering team"
+    owner: "devs@quix.io" 

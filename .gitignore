@@ -1,0 +1,45 @@
+# Binaries
+/bin/
+/build/
+/out/
+
+# Go build artifacts
+*.exe
+*.test
+*.out
+*.prof
+*.coverprofile
+
+# Dependency directories
+/vendor/
+
+# Go modules
+/go.sum
+/go.mod.tmp
+
+# IDE/editor junk
+*.swp
+*.swo
+*.bak
+*.tmp
+*.DS_Store
+.idea/
+.vscode/
+
+# Helm
+helm/*.tgz
+helm/**/charts/
+helm/**/Chart.lock
+
+# Test cache
+*.log
+.coverage/
+.testbin/
+.testcache/
+
+# Envtest (controller-runtime test framework)
+testbin/
+
+# Generated files
+/config/crd/bases/
+zz_generated.*.go
