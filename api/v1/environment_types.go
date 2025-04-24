@@ -40,18 +40,52 @@ const (
 	PhaseUpdateFailed EnvironmentPhase = "UpdateFailed"
 )
 
+// SubResourcePhase represents the lifecycle phase of a managed sub-resource (Namespace, RoleBinding)
+type SubResourcePhase string
+
+const (
+	// PhaseStatePending indicates the resource has not been processed yet.
+	PhaseStatePending SubResourcePhase = "Pending"
+	// PhaseStateCreating indicates the resource is being created.
+	PhaseStateCreating SubResourcePhase = "Creating"
+	// PhaseStateReady indicates the resource exists and is configured.
+	PhaseStateReady SubResourcePhase = "Ready"
+	// PhaseStateTerminating indicates the resource is being deleted.
+	PhaseStateTerminating SubResourcePhase = "Terminating"
+	// PhaseStateFailed indicates the resource encountered an error.
+	PhaseStateFailed SubResourcePhase = "Failed"
+	// PhaseStateUnmanaged indicates the resource exists but is not managed by the operator.
+	PhaseStateUnmanaged SubResourcePhase = "Unmanaged"
+	// PhaseStateDeleted indicates the resource has been deleted.
+	PhaseStateDeleted SubResourcePhase = "Deleted"
+)
+
 // EnvironmentStatus defines the observed state of Environment
 type EnvironmentStatus struct {
-	// Namespace is the name of the generated namespace
-	Namespace string `json:"namespace,omitempty"`
-
-	// Phase indicates the current phase of the environment
+	// Phase represents the current lifecycle phase of the environment
+	// +optional
 	Phase EnvironmentPhase `json:"phase,omitempty"`
 
-	// ErrorMessage contains details about any error that occurred
+	// Namespace is the name of the managed Kubernetes namespace
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+
+	// ErrorMessage provides details on the last error encountered
+	// +optional
 	ErrorMessage string `json:"errorMessage,omitempty"`
 
-	// Conditions represent the latest available observations of the environment's state
+	// NamespacePhase indicates the current state of the managed namespace.
+	// +optional
+	NamespacePhase string `json:"namespacePhase,omitempty"`
+
+	// RoleBindingPhase indicates the current state of the managed role binding.
+	// +optional
+	RoleBindingPhase string `json:"roleBindingPhase,omitempty"`
+
+	// Conditions provide specific status details
+	// +optional
+	// +listType=map
+	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 

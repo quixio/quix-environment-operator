@@ -15,6 +15,7 @@ type MockNamespaceManager struct {
 	ApplyMetadataFunc      func(env *quixiov1.Environment, namespace *corev1.Namespace) bool
 	UpdateMetadataFunc     func(ctx context.Context, env *quixiov1.Environment, namespace *corev1.Namespace) error
 	IsNamespaceDeletedFunc func(namespace *corev1.Namespace, err error) bool
+	IsNamespaceManagedFunc func(namespace *corev1.Namespace) bool
 
 	// Embed default implementation for non-mocked methods
 	DefaultManager *DefaultNamespaceManager
@@ -62,4 +63,16 @@ func (m *MockNamespaceManager) IsNamespaceDeleted(namespace *corev1.Namespace, e
 	}
 	// Also check the DeletionTimestamp in the default fallback
 	return namespace == nil || !namespace.DeletionTimestamp.IsZero()
+}
+
+// IsNamespaceManaged uses the mock function if provided, or falls back to default behavior
+func (m *MockNamespaceManager) IsNamespaceManaged(namespace *corev1.Namespace) bool {
+	if m.IsNamespaceManagedFunc != nil {
+		return m.IsNamespaceManagedFunc(namespace)
+	}
+	if m.DefaultManager != nil {
+		return m.DefaultManager.IsNamespaceManaged(namespace)
+	}
+	// Default implementation if no other behavior is specified
+	return false
 }

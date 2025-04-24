@@ -80,6 +80,172 @@ var _ = Describe("Environment controller integration tests", func() {
 		})
 	})
 
+	Context("When creating an Environment with custom metadata", func() {
+		It("Should apply custom labels and annotations to the namespace", func() {
+			ctx := context.Background()
+
+			// Create an environment with custom labels and annotations
+			labels := map[string]string{
+				"custom-label":     "test-value",
+				"environment-type": "integration-test",
+			}
+
+			annotations := map[string]string{
+				"custom-annotation": "test-value",
+				"description":       "Integration test environment",
+			}
+
+			env := createIntegrationTestEnvironment("test-custom-metadata", labels, annotations)
+			Expect(k8sClient.Create(ctx, env)).Should(Succeed())
+
+			// Namespace name
+			nsName := fmt.Sprintf("%s%s", "test-custom-metadata", testConfig.NamespaceSuffix)
+			nsLookupKey := types.NamespacedName{Name: nsName}
+
+			// Wait for namespace to be created
+			createdNs := &corev1.Namespace{}
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, nsLookupKey, createdNs)
+				return err == nil
+			}, timeout, interval).Should(BeTrue())
+
+			// Verify custom labels
+			Eventually(func() string {
+				updatedNs := &corev1.Namespace{}
+				if err := k8sClient.Get(ctx, nsLookupKey, updatedNs); err != nil {
+					return ""
+				}
+				return updatedNs.Labels["custom-label"]
+			}, timeout, interval).Should(Equal("test-value"))
+
+			Eventually(func() string {
+				updatedNs := &corev1.Namespace{}
+				if err := k8sClient.Get(ctx, nsLookupKey, updatedNs); err != nil {
+					return ""
+				}
+				return updatedNs.Labels["environment-type"]
+			}, timeout, interval).Should(Equal("integration-test"))
+
+			// Verify custom annotations
+			Eventually(func() string {
+				updatedNs := &corev1.Namespace{}
+				if err := k8sClient.Get(ctx, nsLookupKey, updatedNs); err != nil {
+					return ""
+				}
+				return updatedNs.Annotations["custom-annotation"]
+			}, timeout, interval).Should(Equal("test-value"))
+
+			Eventually(func() string {
+				updatedNs := &corev1.Namespace{}
+				if err := k8sClient.Get(ctx, nsLookupKey, updatedNs); err != nil {
+					return ""
+				}
+				return updatedNs.Annotations["description"]
+			}, timeout, interval).Should(Equal("Integration test environment"))
+
+			// Clean up
+			Expect(k8sClient.Delete(ctx, env)).Should(Succeed())
+
+			// Verify the namespace is deleted
+			Eventually(func() bool {
+				nsGetErr := k8sClient.Get(ctx, nsLookupKey, createdNs)
+				return mockNamespaceManager.IsNamespaceDeleted(createdNs, nsGetErr)
+			}, deletionTimeout, interval).Should(BeTrue(), "Namespace was not considered deleted by the manager in time")
+		})
+	})
+
+	Context("When updating an Environment resource", func() {
+		It("Should propagate metadata changes to the namespace", func() {
+			ctx := context.Background()
+
+			// Create environment with initial labels and annotations
+			initialLabels := map[string]string{"initial-label": "initial-value"}
+			initialAnnotations := map[string]string{"initial-annotation": "initial-value"}
+
+			env := createIntegrationTestEnvironment("test-update-suffix", initialLabels, initialAnnotations)
+			Expect(k8sClient.Create(ctx, env)).Should(Succeed())
+
+			// Namespace name - use the correct suffix from testConfig
+			nsName := fmt.Sprintf("%s%s", env.Spec.Id, testConfig.NamespaceSuffix)
+			nsLookupKey := types.NamespacedName{Name: nsName}
+			envLookupKey := types.NamespacedName{Name: env.Name, Namespace: testNamespace}
+
+			// Wait for namespace to be created
+			createdNs := &corev1.Namespace{}
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, nsLookupKey, createdNs)
+				return err == nil
+			}, timeout, interval).Should(BeTrue())
+
+			// Verify initial labels and annotations - use Eventually to wait for controller to set them
+			Eventually(func() string {
+				updatedNs := &corev1.Namespace{}
+				if err := k8sClient.Get(ctx, nsLookupKey, updatedNs); err != nil {
+					return ""
+				}
+				return updatedNs.Labels["initial-label"]
+			}, timeout, interval).Should(Equal("initial-value"))
+
+			Eventually(func() string {
+				updatedNs := &corev1.Namespace{}
+				if err := k8sClient.Get(ctx, nsLookupKey, updatedNs); err != nil {
+					return ""
+				}
+				return updatedNs.Annotations["initial-annotation"]
+			}, timeout, interval).Should(Equal("initial-value"))
+
+			// Wait for environment to be Ready before updating
+			createdEnv := &quixiov1.Environment{}
+			Eventually(func() quixiov1.EnvironmentPhase {
+				if err := k8sClient.Get(ctx, envLookupKey, createdEnv); err != nil {
+					return ""
+				}
+				return createdEnv.Status.Phase
+			}, timeout, interval).Should(Equal(quixiov1.PhaseReady))
+
+			// Update the environment with new labels and annotations
+			updatedEnv := createdEnv.DeepCopy()
+			updatedEnv.Spec.Labels = map[string]string{
+				"initial-label":  "initial-value",
+				"new-label":      "new-value",
+				"modified-label": "added-value",
+			}
+			updatedEnv.Spec.Annotations = map[string]string{
+				"initial-annotation":  "initial-value",
+				"new-annotation":      "new-value",
+				"modified-annotation": "added-value",
+			}
+
+			Expect(k8sClient.Update(ctx, updatedEnv)).Should(Succeed())
+
+			// Verify namespace metadata is updated
+			Eventually(func() string {
+				updatedNs := &corev1.Namespace{}
+				if err := k8sClient.Get(ctx, nsLookupKey, updatedNs); err != nil {
+					return ""
+				}
+				return updatedNs.Labels["new-label"]
+			}, timeout, interval).Should(Equal("new-value"))
+
+			Eventually(func() string {
+				updatedNs := &corev1.Namespace{}
+				if err := k8sClient.Get(ctx, nsLookupKey, updatedNs); err != nil {
+					return ""
+				}
+				return updatedNs.Annotations["new-annotation"]
+			}, timeout, interval).Should(Equal("new-value"))
+
+			// Clean up
+			Expect(k8sClient.Delete(ctx, updatedEnv)).Should(Succeed())
+
+			// Verify the namespace is deleted
+			Eventually(func() bool {
+				nsGetErr := k8sClient.Get(ctx, nsLookupKey, createdNs)
+				return mockNamespaceManager.IsNamespaceDeleted(createdNs, nsGetErr)
+			}, deletionTimeout, interval).Should(BeTrue(), "Namespace was not considered deleted by the manager in time")
+		})
+	})
+
 	Context("When deleting an Environment resource", func() {
 		It("Should go through the Deleting phase", func() {
 			ctx := context.Background()
@@ -131,6 +297,12 @@ var _ = Describe("Environment controller integration tests", func() {
 				err := k8sClient.Get(ctx, envLookupKey, createdEnv)
 				return err != nil // Error means it's gone
 			}, deletionTimeout, interval).Should(BeTrue(), "Environment was not deleted within timeout")
+
+			// Verify the namespace is also deleted
+			Eventually(func() bool {
+				nsGetErr := k8sClient.Get(ctx, nsLookupKey, createdNs)
+				return mockNamespaceManager.IsNamespaceDeleted(createdNs, nsGetErr)
+			}, deletionTimeout, interval).Should(BeTrue(), "Namespace was not considered deleted by the manager in time")
 		})
 
 		It("Should raise the NamespaceDeleted event during environment deletion", func() {
@@ -170,7 +342,7 @@ var _ = Describe("Environment controller integration tests", func() {
 
 				// Check each event for the NamespaceDeleted event
 				for _, event := range eventList.Items {
-					if strings.Contains(event.Reason, "NamespaceDeleted") &&
+					if event.Reason == "NamespaceDeleted" &&
 						strings.Contains(event.Regarding.Name, envName) {
 						return true
 					}

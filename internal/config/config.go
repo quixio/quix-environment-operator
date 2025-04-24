@@ -38,3 +38,9 @@ func getEnvOrDefault(key, defaultValue string) string {
 	}
 	return strings.TrimSpace(value)
 }
+
+// GetRoleBindingName returns the standardized name for the RoleBinding resource.
+// This is currently hardcoded but could be made configurable if needed.
+func (c *OperatorConfig) GetRoleBindingName() string {
+	return "quix-environment-access"
+}

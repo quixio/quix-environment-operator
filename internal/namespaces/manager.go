@@ -21,4 +21,7 @@ type NamespaceManager interface {
 	// IsNamespaceDeleted checks if a namespace should be considered deleted
 	// Returns true if deleted
 	IsNamespaceDeleted(namespace *corev1.Namespace, err error) bool
+
+	// IsNamespaceManaged checks if a namespace is managed by this operator based on labels
+	IsNamespaceManaged(namespace *corev1.Namespace) bool
 }

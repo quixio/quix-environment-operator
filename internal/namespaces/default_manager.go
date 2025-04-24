@@ -121,7 +121,6 @@ func (m *DefaultNamespaceManager) UpdateMetadata(ctx context.Context, env *quixi
 			// Handle the error through the status updater
 			return m.StatusUpdater.SetErrorStatus(ctx, env,
 				quixiov1.PhaseUpdateFailed,
-				status.ConditionTypeReady,
 				err,
 				"Failed to update namespace metadata")
 		}
@@ -138,7 +137,7 @@ func (m *DefaultNamespaceManager) UpdateMetadata(ctx context.Context, env *quixi
 			// Continue even if status update fails
 		}
 
-		m.StatusUpdater.SetSuccessStatus(ctx, env, status.ConditionTypeReady, "Environment updated successfully")
+		m.StatusUpdater.SetSuccessStatus(ctx, env, "Environment updated successfully")
 	}
 
 	return nil
@@ -153,4 +152,13 @@ func (m *DefaultNamespaceManager) IsNamespaceDeleted(namespace *corev1.Namespace
 
 	// Otherwise, consider it deleted only if it's nil
 	return namespace == nil
+}
+
+// IsNamespaceManaged checks if a namespace is managed by this operator
+func (m *DefaultNamespaceManager) IsNamespaceManaged(namespace *corev1.Namespace) bool {
+	if namespace == nil || namespace.Labels == nil {
+		return false
+	}
+	managedLabel, exists := namespace.Labels["quix.io/managed-by"]
+	return exists && managedLabel == "quix-environment-operator"
 }
