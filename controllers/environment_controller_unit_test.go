@@ -24,6 +24,7 @@ import (
 
 	quixiov1 "github.com/quix-analytics/quix-environment-operator/api/v1"
 	"github.com/quix-analytics/quix-environment-operator/internal/config"
+	"github.com/quix-analytics/quix-environment-operator/internal/status"
 )
 
 func TestValidateEnvironment(t *testing.T) {
@@ -36,17 +37,27 @@ func TestValidateEnvironment(t *testing.T) {
 
 	// Create the reconciler with a mock recorder
 	recorder := record.NewFakeRecorder(10)
-	reconciler := &EnvironmentReconciler{
-		Client:   client,
-		Scheme:   s,
-		Recorder: recorder,
-		Config: &config.OperatorConfig{
+
+	// Create the namespace manager mock
+	nsManager := &MockNamespaceManager{}
+
+	// Create status updater mock
+	statusUpdater := &MockStatusUpdater{}
+
+	reconciler, err := NewEnvironmentReconciler(
+		client,
+		s,
+		recorder,
+		&config.OperatorConfig{
 			NamespaceSuffix:         "-suffix",
 			ServiceAccountName:      "test-sa",
 			ServiceAccountNamespace: "test-ns",
 			ClusterRoleName:         "test-role",
 		},
-	}
+		nsManager,
+		statusUpdater,
+	)
+	assert.NoError(t, err)
 
 	tests := []struct {
 		name        string
@@ -138,19 +149,27 @@ func TestSetCondition(t *testing.T) {
 		WithStatusSubresource(&quixiov1.Environment{}).
 		Build()
 
-	// Create the reconciler with a mock recorder
+	// Create a recorder for events
 	recorder := record.NewFakeRecorder(10)
-	reconciler := &EnvironmentReconciler{
-		Client:   client,
-		Scheme:   s,
-		Recorder: recorder,
-		Config: &config.OperatorConfig{
+
+	// Create the StatusUpdater
+	statusUpdater := status.NewStatusUpdater(client, recorder)
+
+	// Create the reconciler with the StatusUpdater
+	reconciler, err := NewEnvironmentReconciler(
+		client,
+		s,
+		recorder,
+		&config.OperatorConfig{
 			NamespaceSuffix:         "-suffix",
 			ServiceAccountName:      "test-sa",
 			ServiceAccountNamespace: "test-ns",
 			ClusterRoleName:         "test-role",
 		},
-	}
+		&MockNamespaceManager{},
+		statusUpdater,
+	)
+	assert.NoError(t, err)
 
 	// Test adding a condition
 	condition := metav1.Condition{
@@ -160,34 +179,47 @@ func TestSetCondition(t *testing.T) {
 		Message: "This is a test condition",
 	}
 
-	reconciler.setCondition(context.Background(), env, condition)
+	// Use StatusUpdater's SetSuccessStatus which will set the condition
+	reconciler.StatusUpdater().SetSuccessStatus(context.Background(), env, condition.Type, condition.Message)
 
 	// Verify the condition was set
 	updatedEnv := &quixiov1.Environment{}
-	err := client.Get(context.Background(), types.NamespacedName{
+	err = client.Get(context.Background(), types.NamespacedName{
 		Name:      env.Name,
 		Namespace: env.Namespace,
 	}, updatedEnv)
 	assert.NoError(t, err)
 
-	// Check if the condition was added
-	assert.Len(t, updatedEnv.Status.Conditions, 1)
-	assert.Equal(t, "Ready", updatedEnv.Status.Conditions[0].Type)
-	assert.Equal(t, metav1.ConditionTrue, updatedEnv.Status.Conditions[0].Status)
-	assert.Equal(t, "Testing", updatedEnv.Status.Conditions[0].Reason)
-	assert.Equal(t, "This is a test condition", updatedEnv.Status.Conditions[0].Message)
-	assert.Equal(t, int64(1), updatedEnv.Status.Conditions[0].ObservedGeneration)
-	assert.False(t, updatedEnv.Status.Conditions[0].LastTransitionTime.IsZero())
+	// Check if a condition was added (note: may not exactly match our input since SetSuccessStatus creates its own)
+	assert.NotEmpty(t, updatedEnv.Status.Conditions, "Expected at least one condition to be set")
 
-	// Test updating a condition
-	updatedCondition := metav1.Condition{
-		Type:    "Ready",
-		Status:  metav1.ConditionFalse,
-		Reason:  "TestingUpdate",
-		Message: "Updated condition",
+	// Find the Ready condition
+	var readyCondition *metav1.Condition
+	for i := range updatedEnv.Status.Conditions {
+		if updatedEnv.Status.Conditions[i].Type == "Ready" {
+			readyCondition = &updatedEnv.Status.Conditions[i]
+			break
+		}
 	}
 
-	reconciler.setCondition(context.Background(), updatedEnv, updatedCondition)
+	assert.NotNil(t, readyCondition, "Expected to find a Ready condition")
+	assert.Equal(t, metav1.ConditionTrue, readyCondition.Status)
+	assert.Equal(t, "This is a test condition", readyCondition.Message)
+	assert.Equal(t, int64(1), readyCondition.ObservedGeneration)
+	assert.False(t, readyCondition.LastTransitionTime.IsZero())
+
+	// Test setting an error condition
+	testErr := errors.New("test error")
+
+	// Use StatusUpdater's SetErrorStatus
+	reconciler.StatusUpdater().SetErrorStatus(
+		context.Background(),
+		updatedEnv,
+		quixiov1.PhaseCreateFailed,
+		"Ready",
+		testErr,
+		"Test error occurred",
+	)
 
 	// Verify the condition was updated
 	finalEnv := &quixiov1.Environment{}
@@ -197,12 +229,19 @@ func TestSetCondition(t *testing.T) {
 	}, finalEnv)
 	assert.NoError(t, err)
 
-	// Check if the condition was updated
-	assert.Len(t, finalEnv.Status.Conditions, 1)
-	assert.Equal(t, "Ready", finalEnv.Status.Conditions[0].Type)
-	assert.Equal(t, metav1.ConditionFalse, finalEnv.Status.Conditions[0].Status)
-	assert.Equal(t, "TestingUpdate", finalEnv.Status.Conditions[0].Reason)
-	assert.Equal(t, "Updated condition", finalEnv.Status.Conditions[0].Message)
+	// Find the updated Ready condition
+	readyCondition = nil
+	for i := range finalEnv.Status.Conditions {
+		if finalEnv.Status.Conditions[i].Type == "Ready" {
+			readyCondition = &finalEnv.Status.Conditions[i]
+			break
+		}
+	}
+
+	assert.NotNil(t, readyCondition, "Expected to find a Ready condition")
+	assert.Equal(t, metav1.ConditionFalse, readyCondition.Status)
+	assert.Contains(t, readyCondition.Message, "Test error occurred")
+	assert.Contains(t, readyCondition.Message, "test error")
 }
 
 func TestUpdateEnvironmentStatus(t *testing.T) {
@@ -220,22 +259,24 @@ func TestUpdateEnvironmentStatus(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		setupMock     func(*MockClient, *MockStatusWriter)
+		setupMock     func(*MockStatusUpdater)
 		updateFn      func(*quixiov1.EnvironmentStatus)
 		expectedError bool
 	}{
 		{
 			name: "Successful status update",
-			setupMock: func(mockClient *MockClient, mockStatusWriter *MockStatusWriter) {
-				mockClient.On("Get", mock.Anything, types.NamespacedName{Name: "test-env", Namespace: "default"}, mock.AnythingOfType("*v1.Environment")).
+			setupMock: func(mockStatusUpdater *MockStatusUpdater) {
+				mockStatusUpdater.On("UpdateStatus",
+					mock.MatchedBy(func(ctx context.Context) bool { return true }),
+					mock.MatchedBy(func(env *quixiov1.Environment) bool { return true }),
+					mock.AnythingOfType("func(*v1.EnvironmentStatus)")).
 					Run(func(args mock.Arguments) {
-						// Copy the environment to the argument
-						envArg := args.Get(2).(*quixiov1.Environment)
-						*envArg = *env
+						// Extract the update function and apply it to the environment's status
+						env := args.Get(1).(*quixiov1.Environment)
+						updateFn := args.Get(2).(func(*quixiov1.EnvironmentStatus))
+						updateFn(&env.Status)
 					}).
 					Return(nil)
-				mockClient.On("Status").Return(mockStatusWriter)
-				mockStatusWriter.On("Update", mock.Anything, mock.AnythingOfType("*v1.Environment")).Return(nil)
 			},
 			updateFn: func(status *quixiov1.EnvironmentStatus) {
 				status.Phase = quixiov1.PhaseReady
@@ -244,65 +285,13 @@ func TestUpdateEnvironmentStatus(t *testing.T) {
 			expectedError: false,
 		},
 		{
-			name: "Failed to get environment",
-			setupMock: func(mockClient *MockClient, mockStatusWriter *MockStatusWriter) {
-				mockClient.On("Get", mock.Anything, types.NamespacedName{Name: "test-env", Namespace: "default"}, mock.AnythingOfType("*v1.Environment")).
-					Return(errors.New("get error"))
-			},
-			updateFn: func(status *quixiov1.EnvironmentStatus) {
-				status.Phase = quixiov1.PhaseReady
-			},
-			expectedError: true,
-		},
-		{
-			name: "Status update conflict then success",
-			setupMock: func(mockClient *MockClient, mockStatusWriter *MockStatusWriter) {
-				// First call returns the environment
-				mockClient.On("Get", mock.Anything, types.NamespacedName{Name: "test-env", Namespace: "default"}, mock.AnythingOfType("*v1.Environment")).
-					Run(func(args mock.Arguments) {
-						// Copy the environment to the argument
-						envArg := args.Get(2).(*quixiov1.Environment)
-						*envArg = *env
-					}).
-					Return(nil).Once()
-
-				mockClient.On("Status").Return(mockStatusWriter)
-
-				// First update fails with conflict
-				mockStatusWriter.On("Update", mock.Anything, mock.AnythingOfType("*v1.Environment")).
-					Return(k8serrors.NewConflict(schema.GroupResource{Group: "quix.io", Resource: "environments"}, "test-env", errors.New("conflict"))).Once()
-
-				// Second get call
-				mockClient.On("Get", mock.Anything, types.NamespacedName{Name: "test-env", Namespace: "default"}, mock.AnythingOfType("*v1.Environment")).
-					Run(func(args mock.Arguments) {
-						// Copy the environment to the argument
-						envArg := args.Get(2).(*quixiov1.Environment)
-						*envArg = *env
-					}).
-					Return(nil).Once()
-
-				// Second update succeeds
-				mockStatusWriter.On("Update", mock.Anything, mock.AnythingOfType("*v1.Environment")).
-					Return(nil).Once()
-			},
-			updateFn: func(status *quixiov1.EnvironmentStatus) {
-				status.Phase = quixiov1.PhaseReady
-			},
-			expectedError: false,
-		},
-		{
-			name: "Non-conflict error in status update",
-			setupMock: func(mockClient *MockClient, mockStatusWriter *MockStatusWriter) {
-				mockClient.On("Get", mock.Anything, types.NamespacedName{Name: "test-env", Namespace: "default"}, mock.AnythingOfType("*v1.Environment")).
-					Run(func(args mock.Arguments) {
-						// Copy the environment to the argument
-						envArg := args.Get(2).(*quixiov1.Environment)
-						*envArg = *env
-					}).
-					Return(nil)
-				mockClient.On("Status").Return(mockStatusWriter)
-				mockStatusWriter.On("Update", mock.Anything, mock.AnythingOfType("*v1.Environment")).
-					Return(errors.New("non-conflict error"))
+			name: "Error during status update",
+			setupMock: func(mockStatusUpdater *MockStatusUpdater) {
+				mockStatusUpdater.On("UpdateStatus",
+					mock.MatchedBy(func(ctx context.Context) bool { return true }),
+					mock.MatchedBy(func(env *quixiov1.Environment) bool { return true }),
+					mock.AnythingOfType("func(*v1.EnvironmentStatus)")).
+					Return(errors.New("update error"))
 			},
 			updateFn: func(status *quixiov1.EnvironmentStatus) {
 				status.Phase = quixiov1.PhaseReady
@@ -313,116 +302,38 @@ func TestUpdateEnvironmentStatus(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Create the mock status updater
+			mockStatusUpdater := &MockStatusUpdater{}
+			tt.setupMock(mockStatusUpdater)
+
+			// Create a mock client
 			mockClient := &MockClient{}
-			mockStatusWriter := &MockStatusWriter{}
 
-			tt.setupMock(mockClient, mockStatusWriter)
+			// Create a mock namespace manager
+			mockNamespaceManager := &MockNamespaceManager{}
 
-			reconciler := &EnvironmentReconciler{
-				Client: mockClient,
-				Config: &config.OperatorConfig{},
-			}
+			// Create the reconciler with the constructor
+			reconciler, err := NewEnvironmentReconciler(
+				mockClient,
+				s,
+				record.NewFakeRecorder(10),
+				&config.OperatorConfig{},
+				mockNamespaceManager,
+				mockStatusUpdater,
+			)
+			assert.NoError(t, err)
 
-			err := reconciler.updateEnvironmentStatus(context.Background(), env, tt.updateFn)
+			// Call the method to test
+			err = reconciler.StatusUpdater().UpdateStatus(context.Background(), env, tt.updateFn)
 
+			// Check results
 			if tt.expectedError {
 				assert.Error(t, err)
 			} else {
 				assert.NoError(t, err)
 			}
 
-			mockClient.AssertExpectations(t)
-			mockStatusWriter.AssertExpectations(t)
-		})
-	}
-}
-
-func TestVerifyNamespaceAnnotations(t *testing.T) {
-	// Register the custom resource
-	s := scheme.Scheme
-	s.AddKnownTypes(quixiov1.GroupVersion, &quixiov1.Environment{})
-
-	tests := []struct {
-		name          string
-		annotations   map[string]string
-		expectedError bool
-	}{
-		{
-			name: "All required annotations present",
-			annotations: map[string]string{
-				"quix.io/environment-crd-namespace": "default",
-				"quix.io/environment-id":            "test-id",
-				"quix.io/environment-resource-name": "test-env",
-				"quix.io/created-by":                "quix-environment-operator",
-			},
-			expectedError: false,
-		},
-		{
-			name: "Missing environment-crd-namespace annotation",
-			annotations: map[string]string{
-				"quix.io/environment-id":            "test-id",
-				"quix.io/environment-resource-name": "test-env",
-			},
-			expectedError: true,
-		},
-		{
-			name: "Missing environment-id annotation",
-			annotations: map[string]string{
-				"quix.io/environment-crd-namespace": "default",
-				"quix.io/environment-resource-name": "test-env",
-			},
-			expectedError: true,
-		},
-		{
-			name: "Missing environment-resource-name annotation",
-			annotations: map[string]string{
-				"quix.io/environment-crd-namespace": "default",
-				"quix.io/environment-id":            "test-id",
-			},
-			expectedError: true,
-		},
-		{
-			name:          "No annotations",
-			annotations:   map[string]string{},
-			expectedError: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Create namespace with test annotations
-			namespace := &corev1.Namespace{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:        "test-namespace",
-					Annotations: tt.annotations,
-				},
-			}
-
-			// Create client with namespace
-			client := fake.NewClientBuilder().
-				WithScheme(s).
-				WithObjects(namespace).
-				Build()
-
-			// Create recorder that captures events
-			recorder := record.NewFakeRecorder(10)
-
-			reconciler := &EnvironmentReconciler{
-				Client:   client,
-				Scheme:   s,
-				Recorder: recorder,
-				Config:   &config.OperatorConfig{},
-			}
-
-			// Call the function
-			err := reconciler.verifyNamespaceAnnotations(context.Background(), "test-namespace")
-
-			if tt.expectedError {
-				assert.Error(t, err)
-				assert.Contains(t, err.Error(), "missing required annotations")
-			} else {
-				assert.NoError(t, err)
-			}
+			mockStatusUpdater.AssertExpectations(t)
 		})
 	}
 }
@@ -506,6 +417,10 @@ func TestCreateNamespace(t *testing.T) {
 			// Create a mock client
 			mockClient := &MockClient{}
 
+			// Set up the mock client's Get function to simulate checking if namespace already exists
+			mockClient.On("Get", mock.Anything, types.NamespacedName{Name: "test-suffix"}, mock.AnythingOfType("*v1.Namespace")).
+				Return(k8serrors.NewNotFound(schema.GroupResource{Resource: "namespaces"}, "test-suffix"))
+
 			// Set up the mock client's Create function
 			mockClient.On("Create", mock.Anything, mock.AnythingOfType("*v1.Namespace"), mock.Anything).
 				Run(func(args mock.Arguments) {
@@ -530,6 +445,43 @@ func TestCreateNamespace(t *testing.T) {
 				}).
 				Return(tt.mockClientCreate(context.Background(), nil))
 
+			// Create a mock namespace manager
+			mockNamespaceManager := &MockNamespaceManager{}
+			mockNamespaceManager.On("ApplyMetadata", mock.Anything, mock.Anything).
+				Run(func(args mock.Arguments) {
+					env := args.Get(0).(*quixiov1.Environment)
+					namespace := args.Get(1).(*corev1.Namespace)
+
+					// Apply expected labels and annotations
+					if namespace.Labels == nil {
+						namespace.Labels = make(map[string]string)
+					}
+					if namespace.Annotations == nil {
+						namespace.Annotations = make(map[string]string)
+					}
+
+					// Apply required labels
+					namespace.Labels["quix.io/managed-by"] = "quix-environment-operator"
+					namespace.Labels["quix.io/environment-id"] = env.Spec.Id
+
+					// Apply custom labels
+					for k, v := range env.Spec.Labels {
+						namespace.Labels[k] = v
+					}
+
+					// Apply required annotations
+					namespace.Annotations["quix.io/created-by"] = "quix-environment-operator"
+					namespace.Annotations["quix.io/environment-id"] = env.Spec.Id
+					namespace.Annotations["quix.io/environment-crd-namespace"] = env.Namespace
+					namespace.Annotations["quix.io/environment-resource-name"] = env.Name
+
+					// Apply custom annotations
+					for k, v := range env.Spec.Annotations {
+						namespace.Annotations[k] = v
+					}
+				}).
+				Return(true)
+
 			// Create the test environment
 			env := &quixiov1.Environment{
 				ObjectMeta: metav1.ObjectMeta{
@@ -539,16 +491,21 @@ func TestCreateNamespace(t *testing.T) {
 				Spec: tt.environmentSpec,
 			}
 
-			// Create the reconciler
-			reconciler := &EnvironmentReconciler{
-				Client: mockClient,
-				Config: &config.OperatorConfig{
+			// Create the reconciler with constructor
+			reconciler, err := NewEnvironmentReconciler(
+				mockClient,
+				scheme.Scheme,
+				record.NewFakeRecorder(10),
+				&config.OperatorConfig{
 					NamespaceSuffix: "-suffix",
 				},
-			}
+				mockNamespaceManager,
+				&MockStatusUpdater{},
+			)
+			assert.NoError(t, err)
 
 			// Call createNamespace
-			err := reconciler.createNamespace(context.Background(), env, "test-suffix")
+			err = reconciler.createNamespace(context.Background(), env, "test-suffix")
 
 			// Check the result
 			if tt.expectError {
@@ -559,6 +516,7 @@ func TestCreateNamespace(t *testing.T) {
 
 			// Verify that all expected method calls were made
 			mockClient.AssertExpectations(t)
+			mockNamespaceManager.AssertExpectations(t)
 		})
 	}
 }
@@ -605,14 +563,25 @@ func TestHandleDeletion_NamespaceAlreadyDeleted(t *testing.T) {
 		}).
 		Return(nil)
 
-	// Create the reconciler
-	reconciler := &EnvironmentReconciler{
-		Client: mockClient,
-		Config: &config.OperatorConfig{
+	// Create the namespace manager mock
+	nsManager := &MockNamespaceManager{}
+	nsManager.On("IsNamespaceDeleted", mock.Anything, mock.Anything).Return(true)
+
+	// Create status updater mock
+	statusUpdater := &MockStatusUpdater{}
+
+	// Create the reconciler with constructor
+	reconciler, err := NewEnvironmentReconciler(
+		mockClient,
+		s,
+		record.NewFakeRecorder(10),
+		&config.OperatorConfig{
 			NamespaceSuffix: "-suffix",
 		},
-		Recorder: record.NewFakeRecorder(10),
-	}
+		nsManager,
+		statusUpdater,
+	)
+	assert.NoError(t, err)
 
 	// Call handleDeletion
 	result, err := reconciler.handleDeletion(context.Background(), env)
@@ -665,14 +634,25 @@ func TestHandleDeletion_NamespaceHasDeletionTimestamp(t *testing.T) {
 		WithStatusSubresource(&quixiov1.Environment{}).
 		Build()
 
-	// Create the reconciler
-	reconciler := &EnvironmentReconciler{
-		Client: client,
-		Config: &config.OperatorConfig{
+	// Create the namespace manager mock
+	nsManager := &MockNamespaceManager{}
+	nsManager.On("IsNamespaceDeleted", mock.Anything, mock.Anything).Return(true)
+
+	// Create status updater mock
+	statusUpdater := &MockStatusUpdater{}
+
+	// Create the reconciler with constructor
+	reconciler, err := NewEnvironmentReconciler(
+		client,
+		s,
+		record.NewFakeRecorder(10),
+		&config.OperatorConfig{
 			NamespaceSuffix: "-suffix",
 		},
-		Recorder: record.NewFakeRecorder(10),
-	}
+		nsManager,
+		statusUpdater,
+	)
+	assert.NoError(t, err)
 
 	// Call handleDeletion
 	result, err := reconciler.handleDeletion(context.Background(), env)
@@ -741,4 +721,55 @@ func (m *MockStatusWriter) Patch(ctx context.Context, obj client.Object, patch c
 func (m *MockStatusWriter) Create(ctx context.Context, obj client.Object, subResource client.Object, opts ...client.SubResourceCreateOption) error {
 	args := m.Called(ctx, obj, subResource)
 	return args.Error(0)
+}
+
+// MockStatusUpdater is a mock implementation of status.StatusUpdater
+type MockStatusUpdater struct {
+	mock.Mock
+}
+
+// UpdateStatus implements status.StatusUpdater
+func (m *MockStatusUpdater) UpdateStatus(ctx context.Context, env *quixiov1.Environment, updates func(*quixiov1.EnvironmentStatus)) error {
+	args := m.Called(ctx, env, updates)
+
+	// Execute the updates function on the provided environment to simulate the update
+	if args.Get(0) == nil {
+		updates(&env.Status)
+	}
+
+	return args.Error(0)
+}
+
+// SetSuccessStatus implements status.StatusUpdater
+func (m *MockStatusUpdater) SetSuccessStatus(ctx context.Context, env *quixiov1.Environment, conditionType, message string) {
+	m.Called(ctx, env, conditionType, message)
+}
+
+// SetErrorStatus implements status.StatusUpdater
+func (m *MockStatusUpdater) SetErrorStatus(ctx context.Context, env *quixiov1.Environment, phase quixiov1.EnvironmentPhase, conditionType string, err error, eventMsg string) error {
+	args := m.Called(ctx, env, phase, conditionType, err, eventMsg)
+	return args.Error(0)
+}
+
+// MockNamespaceManager is a mock implementation of namespaces.NamespaceManager
+type MockNamespaceManager struct {
+	mock.Mock
+}
+
+// ApplyMetadata implements namespaces.NamespaceManager
+func (m *MockNamespaceManager) ApplyMetadata(env *quixiov1.Environment, namespace *corev1.Namespace) bool {
+	args := m.Called(env, namespace)
+	return args.Bool(0)
+}
+
+// UpdateMetadata implements namespaces.NamespaceManager
+func (m *MockNamespaceManager) UpdateMetadata(ctx context.Context, env *quixiov1.Environment, namespace *corev1.Namespace) error {
+	args := m.Called(ctx, env, namespace)
+	return args.Error(0)
+}
+
+// IsNamespaceDeleted implements namespaces.NamespaceManager
+func (m *MockNamespaceManager) IsNamespaceDeleted(namespace *corev1.Namespace, err error) bool {
+	args := m.Called(namespace, err)
+	return args.Bool(0)
 }

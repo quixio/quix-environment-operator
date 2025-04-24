@@ -17,6 +17,8 @@ import (
 	quixiov1 "github.com/quix-analytics/quix-environment-operator/api/v1"
 	"github.com/quix-analytics/quix-environment-operator/controllers"
 	"github.com/quix-analytics/quix-environment-operator/internal/config"
+	"github.com/quix-analytics/quix-environment-operator/internal/namespaces"
+	"github.com/quix-analytics/quix-environment-operator/internal/status"
 )
 
 var (
@@ -65,12 +67,30 @@ func main() {
 
 	operatorConfig := config.GetConfig()
 
-	if err = (&controllers.EnvironmentReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("environment-controller"),
-		Config:   operatorConfig,
-	}).SetupWithManager(mgr); err != nil {
+	// Create the event recorder
+	recorder := mgr.GetEventRecorderFor("environment-controller")
+
+	// Create the status updater
+	statusUpdater := status.NewStatusUpdater(mgr.GetClient(), recorder)
+
+	// Create the namespace manager
+	namespaceManager := namespaces.NewDefaultNamespaceManager(mgr.GetClient(), recorder, statusUpdater)
+
+	// Create the reconciler with the new constructor
+	reconciler, err := controllers.NewEnvironmentReconciler(
+		mgr.GetClient(),
+		mgr.GetScheme(),
+		recorder,
+		operatorConfig,
+		namespaceManager,
+		statusUpdater,
+	)
+	if err != nil {
+		setupLog.Error(err, "unable to create environment reconciler")
+		os.Exit(1)
+	}
+
+	if err := reconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Environment")
 		os.Exit(1)
 	}

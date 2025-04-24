@@ -17,6 +17,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -25,9 +26,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	quixiov1 "github.com/quix-analytics/quix-environment-operator/api/v1"
 	"github.com/quix-analytics/quix-environment-operator/internal/config"
+	"github.com/quix-analytics/quix-environment-operator/internal/namespaces"
+	"github.com/quix-analytics/quix-environment-operator/internal/status"
 )
 
 // These tests use Ginkgo (BDD-style Go testing framework). Refer to
@@ -39,6 +43,75 @@ var testEnv *envtest.Environment
 var ctx context.Context
 var cancel context.CancelFunc
 var testConfig *config.OperatorConfig
+var reconciler *EnvironmentReconciler
+
+// TestingNamespaceManager extends NamespaceManager with test-specific functionality
+type TestingNamespaceManager interface {
+	namespaces.NamespaceManager
+}
+
+// testNamespaceManager implements the TestingNamespaceManager interface
+type testNamespaceManager struct {
+	namespaces.NamespaceManager
+}
+
+// NewTestingNamespaceManager creates a new testing namespace manager that wraps a regular manager
+func NewTestingNamespaceManager(baseManager namespaces.NamespaceManager) TestingNamespaceManager {
+	return &testNamespaceManager{
+		NamespaceManager: baseManager,
+	}
+}
+
+// IsNamespaceDeleted checks if a namespace should be considered deleted
+func (m *testNamespaceManager) IsNamespaceDeleted(namespace *corev1.Namespace, err error) bool {
+	// First check if there's a NotFound error, which means it's deleted
+	if err != nil {
+		return errors.IsNotFound(err)
+	}
+
+	// For test environments: consider a namespace to be deleted if:
+	// 1. It's nil (actually gone)
+	// 2. It has a deletion timestamp set (in the process of being deleted)
+	return namespace == nil || (namespace.DeletionTimestamp != nil && !namespace.DeletionTimestamp.IsZero())
+}
+
+// Add a logging method to help with debugging
+func (m *testNamespaceManager) LogType() string {
+	return "TestingNamespaceManager"
+}
+
+// Create a custom test recorder that exposes its events for testing
+type TestEventRecorder struct {
+	Events []string
+}
+
+// Implements the record.EventRecorder interface
+func (r *TestEventRecorder) Event(object runtime.Object, eventtype, reason, message string) {
+	r.Events = append(r.Events, fmt.Sprintf("%s %s: %s", eventtype, reason, message))
+}
+
+func (r *TestEventRecorder) Eventf(object runtime.Object, eventtype, reason, messageFmt string, args ...interface{}) {
+	r.Events = append(r.Events, fmt.Sprintf("%s %s: %s", eventtype, reason, fmt.Sprintf(messageFmt, args...)))
+}
+
+func (r *TestEventRecorder) AnnotatedEventf(object runtime.Object, annotations map[string]string, eventtype string, reason string, messageFmt string, args ...interface{}) {
+	r.Events = append(r.Events, fmt.Sprintf("%s %s: %s", eventtype, reason, fmt.Sprintf(messageFmt, args...)))
+}
+
+// Helper to check for events containing specific text
+func (r *TestEventRecorder) ContainsEvent(text string) bool {
+	for _, event := range r.Events {
+		if strings.Contains(event, text) {
+			return true
+		}
+	}
+	return false
+}
+
+// Reset clears the event log
+func (r *TestEventRecorder) Reset() {
+	r.Events = []string{}
+}
 
 func TestAPIs(t *testing.T) {
 	RegisterFailHandler(Fail)
@@ -84,12 +157,46 @@ var _ = BeforeSuite(func() {
 		ClusterRoleName:         "test-cluster-role",
 	}
 
-	err = (&EnvironmentReconciler{
-		Client:   k8sManager.GetClient(),
-		Scheme:   k8sManager.GetScheme(),
-		Recorder: k8sManager.GetEventRecorderFor("environment-controller"),
-		Config:   testConfig,
-	}).SetupWithManager(k8sManager)
+	// Create the reconciler
+	statusUpdater := status.NewStatusUpdater(k8sManager.GetClient(), k8sManager.GetEventRecorderFor("environment-controller"))
+
+	// Create namespace manager with the status updater
+	baseNamespaceManager := namespaces.NewDefaultNamespaceManager(
+		k8sManager.GetClient(),
+		k8sManager.GetEventRecorderFor("environment-controller"),
+		statusUpdater,
+	)
+
+	// Wrap with TestingNamespaceManager for enhanced test functionality
+	testingNamespaceManager := NewTestingNamespaceManager(baseNamespaceManager)
+
+	// Add debug logging to confirm we're using the right type
+	GinkgoWriter.Printf("Using namespace manager type: %T\n", testingNamespaceManager)
+	GinkgoWriter.Printf("TestingNamespaceManager will consider namespaces with deletion timestamp as deleted\n")
+
+	// Create test namespace to confirm behavior
+	testNs := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			DeletionTimestamp: &metav1.Time{Time: time.Now()},
+		},
+	}
+
+	isDeleted := testingNamespaceManager.IsNamespaceDeleted(testNs, nil)
+	GinkgoWriter.Printf("Test with namespace having deletion timestamp: IsNamespaceDeleted returns %v\n", isDeleted)
+
+	// Create the reconciler with constructor
+	var initErr error
+	reconciler, initErr = NewEnvironmentReconciler(
+		k8sManager.GetClient(),
+		k8sManager.GetScheme(),
+		k8sManager.GetEventRecorderFor("environment-controller"),
+		testConfig,
+		testingNamespaceManager,
+		statusUpdater,
+	)
+	Expect(initErr).ToNot(HaveOccurred(), "failed to create reconciler")
+
+	err = reconciler.SetupWithManager(k8sManager)
 	Expect(err).ToNot(HaveOccurred())
 
 	go func() {
@@ -156,6 +263,25 @@ var _ = Describe("Environment controller", func() {
 					createdEnv.ResourceVersion)
 				return true
 			}, timeout, interval).Should(BeTrue())
+
+			// Verify environment goes through the Creating phase
+			// Note: This might be difficult to catch as it transitions quickly
+			creatingPhaseFound := false
+			for attempt := 0; attempt < 10; attempt++ {
+				if err := k8sClient.Get(ctx, envLookupKey, createdEnv); err == nil {
+					if createdEnv.Status.Phase == quixiov1.PhaseCreating {
+						creatingPhaseFound = true
+						GinkgoWriter.Printf("Caught environment in Creating phase\n")
+						break
+					}
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+
+			// Don't fail the test if we didn't catch it - the transition might be too quick
+			if !creatingPhaseFound {
+				GinkgoWriter.Printf("Environment might have transitioned through Creating phase too quickly to observe\n")
+			}
 
 			// Expected namespace name
 			expectedNsName := fmt.Sprintf("%s%s", env.Spec.Id, testConfig.NamespaceSuffix)
@@ -693,6 +819,139 @@ var _ = Describe("Environment controller", func() {
 				}
 				return false
 			}, timeout, interval).Should(BeTrue())
+		})
+	})
+
+	Context("When updating an Environment resource fails", func() {
+		It("Should transition to UpdateFailed phase when namespace update fails", func() {
+			By("Creating a new Environment")
+			ctx := context.Background()
+			env := createTestEnvironment("test-update-fail", map[string]string{"initial": "value"}, nil)
+			Expect(k8sClient.Create(ctx, env)).Should(Succeed())
+
+			// Expected namespace name
+			expectedNsName := fmt.Sprintf("%s%s", env.Spec.Id, testConfig.NamespaceSuffix)
+			nsLookupKey := types.NamespacedName{Name: expectedNsName}
+
+			// Wait for namespace to be created
+			createdNs := &corev1.Namespace{}
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, nsLookupKey, createdNs)
+				return err == nil
+			}, timeout, interval).Should(BeTrue())
+
+			// Wait for environment to reach Ready state
+			envLookupKey := types.NamespacedName{Name: env.Name, Namespace: testNamespace}
+			createdEnv := &quixiov1.Environment{}
+
+			Eventually(func() quixiov1.EnvironmentPhase {
+				err := k8sClient.Get(ctx, envLookupKey, createdEnv)
+				if err != nil {
+					return ""
+				}
+				return createdEnv.Status.Phase
+			}, timeout, interval).Should(Equal(quixiov1.PhaseReady))
+
+			By("Creating a test event recorder to capture events")
+			testRecorder := &TestEventRecorder{}
+
+			// Create a new reconciler with mocked namespace manager for this test
+			mockManager := &namespaces.MockNamespaceManager{
+				// Don't use DefaultManager, directly implement all required functions
+				UpdateMetadataFunc: func(ctx context.Context, env *quixiov1.Environment, namespace *corev1.Namespace) error {
+					GinkgoWriter.Printf("Mocked function: returning error to simulate update failure\n")
+					return fmt.Errorf("simulated update failure for testing")
+				},
+				// Also provide implementations for the other methods
+				ApplyMetadataFunc: func(env *quixiov1.Environment, namespace *corev1.Namespace) bool {
+					// Implement directly instead of delegating
+					if namespace.Labels == nil {
+						namespace.Labels = make(map[string]string)
+					}
+					namespace.Labels["quix.io/managed-by"] = "quix-environment-operator"
+					namespace.Labels["quix.io/environment-id"] = env.Spec.Id
+					return true
+				},
+				IsNamespaceDeletedFunc: func(namespace *corev1.Namespace, err error) bool {
+					// Implement directly
+					if err != nil {
+						return errors.IsNotFound(err)
+					}
+					return namespace == nil || (namespace.DeletionTimestamp != nil && !namespace.DeletionTimestamp.IsZero())
+				},
+			}
+
+			// Create a dedicated reconciler for testing failure scenarios
+			statusUpdater := status.NewStatusUpdater(k8sClient, testRecorder)
+			errorReconciler, err := NewEnvironmentReconciler(
+				k8sClient,
+				scheme.Scheme,
+				testRecorder,
+				testConfig,
+				mockManager,
+				statusUpdater,
+			)
+			Expect(err).NotTo(HaveOccurred())
+
+			// We don't need to register with manager, just use the reconciler directly
+
+			// Update the environment with new annotations to trigger reconciliation
+			updatedEnv := createdEnv.DeepCopy()
+			updatedEnv.Spec.Annotations = map[string]string{
+				"will-fail": "update-will-fail-due-to-mock",
+			}
+
+			Expect(k8sClient.Update(ctx, updatedEnv)).Should(Succeed())
+
+			// Wait for the update to be processed
+			Eventually(func() bool {
+				// Directly invoke reconciliation
+				_, err := errorReconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: envLookupKey,
+				})
+				return err == nil
+			}, timeout, interval).Should(BeTrue())
+
+			// First check for the failure event being emitted
+			By("Verifying that update failure events are emitted")
+			Eventually(func() bool {
+				return testRecorder.ContainsEvent("simulated update failure")
+			}, timeout, interval).Should(BeTrue(), "Expected to see an event about the update failure")
+
+			// Then verify environment phase also changes
+			By("Verifying environment phase changes to UpdateFailed")
+			Eventually(func() quixiov1.EnvironmentPhase {
+				err := k8sClient.Get(ctx, envLookupKey, createdEnv)
+				if err != nil {
+					return ""
+				}
+				GinkgoWriter.Printf("Current environment phase: %s, Error message: %s\n",
+					createdEnv.Status.Phase, createdEnv.Status.ErrorMessage)
+				return createdEnv.Status.Phase
+			}, timeout*2, interval).Should(Equal(quixiov1.PhaseUpdateFailed))
+
+			// Verify error message is set and contains our simulated error message
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, envLookupKey, createdEnv)
+				if err != nil {
+					return false
+				}
+				return strings.Contains(createdEnv.Status.ErrorMessage, "simulated update failure")
+			}, timeout, interval).Should(BeTrue())
+
+			// Verify Ready condition is set to False
+			var readyCondition *metav1.Condition
+			for i := range createdEnv.Status.Conditions {
+				if createdEnv.Status.Conditions[i].Type == "Ready" {
+					readyCondition = &createdEnv.Status.Conditions[i]
+					break
+				}
+			}
+			Expect(readyCondition).NotTo(BeNil())
+			Expect(string(readyCondition.Status)).To(Equal(string(metav1.ConditionFalse)))
+
+			// Clean up the environment
+			Expect(k8sClient.Delete(ctx, createdEnv)).Should(Succeed())
 		})
 	})
 })

@@ -41,7 +41,7 @@ affinity: {}
 
 env:
   # Namespace suffix for provisioned environments (will be appended to environment name)
-  namespaceSuffix: "-dep"
+  namespaceSuffix: "-qdep"
   
   # ServiceAccount for RoleBindings
   serviceAccountName: "quix-environment-user"
