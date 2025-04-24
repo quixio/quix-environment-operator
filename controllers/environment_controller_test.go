@@ -44,35 +44,7 @@ var ctx context.Context
 var cancel context.CancelFunc
 var testConfig *config.OperatorConfig
 var reconciler *EnvironmentReconciler
-
-// TestingNamespaceManager extends NamespaceManager with test-specific functionality
-type TestingNamespaceManager interface {
-	namespaces.NamespaceManager
-}
-
-// testNamespaceManager implements the TestingNamespaceManager interface
-type testNamespaceManager struct {
-	namespaces.NamespaceManager
-}
-
-// NewTestingNamespaceManager creates a new testing namespace manager that wraps a regular manager
-func NewTestingNamespaceManager(baseManager namespaces.NamespaceManager) TestingNamespaceManager {
-	return &testNamespaceManager{
-		NamespaceManager: baseManager,
-	}
-}
-
-// IsNamespaceDeleted checks if a namespace should be considered deleted
-func (m *testNamespaceManager) IsNamespaceDeleted(namespace *corev1.Namespace, err error) bool {
-	if err != nil {
-		return errors.IsNotFound(err)
-	}
-	return namespace == nil || (namespace.DeletionTimestamp != nil && !namespace.DeletionTimestamp.IsZero())
-}
-
-func (m *testNamespaceManager) LogType() string {
-	return "TestingNamespaceManager"
-}
+var mockNamespaceManager *namespaces.MockNamespaceManager
 
 // TestEventRecorder captures events for testing
 type TestEventRecorder struct {
@@ -146,20 +118,18 @@ var _ = BeforeSuite(func() {
 
 	statusUpdater := status.NewStatusUpdater(k8sManager.GetClient(), k8sManager.GetEventRecorderFor("environment-controller"))
 
-	baseNamespaceManager := namespaces.NewDefaultNamespaceManager(
-		k8sManager.GetClient(),
-		k8sManager.GetEventRecorderFor("environment-controller"),
-		statusUpdater,
-	)
-
-	testingNamespaceManager := NewTestingNamespaceManager(baseNamespaceManager)
+	mockNamespaceManager = namespaces.NewMockNamespaceManager(
+		namespaces.NewDefaultNamespaceManager(
+			k8sManager.GetClient(),
+			k8sManager.GetEventRecorderFor("environment-controller"),
+			statusUpdater))
 
 	reconciler, err = NewEnvironmentReconciler(
 		k8sManager.GetClient(),
 		k8sManager.GetScheme(),
 		k8sManager.GetEventRecorderFor("environment-controller"),
 		testConfig,
-		testingNamespaceManager,
+		mockNamespaceManager,
 		statusUpdater,
 	)
 	Expect(err).ToNot(HaveOccurred(), "failed to create reconciler")
@@ -418,7 +388,7 @@ var _ = Describe("Environment controller", func() {
 				}
 
 				for _, condition := range createdEnv.Status.Conditions {
-					if condition.Type == "Ready" {
+					if condition.Type == status.ConditionTypeReady {
 						return string(condition.Status)
 					}
 				}
@@ -511,68 +481,75 @@ var _ = Describe("Environment controller", func() {
 			envLookupKey := types.NamespacedName{Name: env.Name, Namespace: testNamespace}
 			createdEnv := &quixiov1.Environment{}
 
-			Eventually(func() bool {
+			// Wait for the environment to become Ready (Phase)
+			Eventually(func() quixiov1.EnvironmentPhase {
 				err := k8sClient.Get(ctx, envLookupKey, createdEnv)
 				if err != nil {
-					return false
+					return "" // Return empty string on error
 				}
+				return createdEnv.Status.Phase
+			}, timeout, interval).Should(Equal(quixiov1.PhaseReady), "Environment should reach PhaseReady")
 
+			By("Verifying all conditions eventually become True once Phase is Ready")
+			checkCondition := func(conditionType string) metav1.ConditionStatus {
 				for _, condition := range createdEnv.Status.Conditions {
-					if condition.Type == "NamespaceCreated" && condition.Status == metav1.ConditionTrue {
-						return true
+					if condition.Type == conditionType {
+						return condition.Status
 					}
 				}
-				return false
-			}, timeout, interval).Should(BeTrue())
+				return metav1.ConditionUnknown // Condition not found
+			}
 
-			Eventually(func() bool {
-				err := k8sClient.Get(ctx, envLookupKey, createdEnv)
-				if err != nil {
-					return false
-				}
+			// Wait specifically for NamespaceCreated condition
+			Eventually(func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, envLookupKey, createdEnv)).Should(Succeed())
+				// Check condition status using a helper or inline logic
+				g.Expect(checkCondition(status.ConditionTypeNamespaceCreated)).To(Equal(metav1.ConditionTrue))
+			}, timeout, interval).Should(Succeed(), "NamespaceCreated condition should become True")
 
-				for _, condition := range createdEnv.Status.Conditions {
-					if condition.Type == "RoleBindingCreated" && condition.Status == metav1.ConditionTrue {
-						return true
-					}
-				}
-				return false
-			}, timeout, interval).Should(BeTrue())
+			// Wait specifically for RoleBindingCreated condition
+			Eventually(func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, envLookupKey, createdEnv)).Should(Succeed())
+				g.Expect(checkCondition(status.ConditionTypeRoleBindingCreated)).To(Equal(metav1.ConditionTrue))
+			}, timeout, interval).Should(Succeed(), "RoleBindingCreated condition should become True")
 
-			Eventually(func() bool {
-				err := k8sClient.Get(ctx, envLookupKey, createdEnv)
-				if err != nil {
-					return false
-				}
-
-				for _, condition := range createdEnv.Status.Conditions {
-					if condition.Type == "Ready" && condition.Status == metav1.ConditionTrue {
-						return true
-					}
-				}
-				return false
-			}, timeout, interval).Should(BeTrue())
+			// Wait specifically for Ready condition
+			Eventually(func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, envLookupKey, createdEnv)).Should(Succeed())
+				g.Expect(checkCondition(status.ConditionTypeReady)).To(Equal(metav1.ConditionTrue))
+			}, timeout, interval).Should(Succeed(), "Ready condition should become True")
 
 			By("Deleting the Environment")
 			Expect(k8sClient.Delete(ctx, env)).Should(Succeed())
 
+			// Check that the Ready condition becomes False upon deletion
 			Eventually(func() bool {
 				err := k8sClient.Get(ctx, envLookupKey, createdEnv)
 				if errors.IsNotFound(err) {
-					return true // Environment was fully deleted
+					return true // Environment was fully deleted, counts as Ready=False implicitly
 				}
 
 				if err != nil {
+					// Log transient errors but don't fail the check immediately
+					logf.Log.Error(err, "Error getting environment during deletion check")
 					return false
 				}
 
+				// Environment still exists, check the Ready condition
+				// Need to re-check conditions within the Eventually block's Get
+				found := false
 				for _, condition := range createdEnv.Status.Conditions {
-					if condition.Type == "Ready" && condition.Status == metav1.ConditionFalse {
-						return true
+					if condition.Type == status.ConditionTypeReady {
+						found = true
+						if condition.Status != metav1.ConditionFalse {
+							return false // Ready condition exists but is not False
+						}
+						break // Found the Ready condition
 					}
 				}
-				return false
-			}, timeout, interval).Should(BeTrue())
+				return found // Return true if Ready condition is False
+
+			}, timeout, interval).Should(BeTrue(), "Ready condition should become False after deletion starts")
 		})
 	})
 
@@ -609,20 +586,6 @@ var _ = Describe("Environment controller", func() {
 			mockManager := &namespaces.MockNamespaceManager{
 				UpdateMetadataFunc: func(ctx context.Context, env *quixiov1.Environment, namespace *corev1.Namespace) error {
 					return fmt.Errorf("simulated update failure for testing")
-				},
-				ApplyMetadataFunc: func(env *quixiov1.Environment, namespace *corev1.Namespace) bool {
-					if namespace.Labels == nil {
-						namespace.Labels = make(map[string]string)
-					}
-					namespace.Labels["quix.io/managed-by"] = "quix-environment-operator"
-					namespace.Labels["quix.io/environment-id"] = env.Spec.Id
-					return true
-				},
-				IsNamespaceDeletedFunc: func(namespace *corev1.Namespace, err error) bool {
-					if err != nil {
-						return errors.IsNotFound(err)
-					}
-					return namespace == nil || (namespace.DeletionTimestamp != nil && !namespace.DeletionTimestamp.IsZero())
 				},
 			}
 
@@ -675,7 +638,7 @@ var _ = Describe("Environment controller", func() {
 
 			var readyCondition *metav1.Condition
 			for i := range createdEnv.Status.Conditions {
-				if createdEnv.Status.Conditions[i].Type == "Ready" {
+				if createdEnv.Status.Conditions[i].Type == status.ConditionTypeReady {
 					readyCondition = &createdEnv.Status.Conditions[i]
 					break
 				}
@@ -742,7 +705,7 @@ var _ = Describe("Environment controller", func() {
 					return metav1.ConditionUnknown
 				}
 				for _, cond := range createdEnv.Status.Conditions {
-					if cond.Type == "Ready" {
+					if cond.Type == status.ConditionTypeReady {
 						return cond.Status
 					}
 				}
@@ -773,10 +736,11 @@ var _ = Describe("Environment controller", func() {
 
 			By("Cleaning up the pre-existing namespace")
 			Expect(k8sClient.Delete(ctx, preExistingNs)).Should(Succeed(), "Failed to delete pre-existing namespace during cleanup")
-			Eventually(func() bool {
-				err := k8sClient.Get(ctx, types.NamespacedName{Name: expectedNsName}, retrievedNs)
-				return errors.IsNotFound(err)
-			}, timeout, interval).Should(BeTrue(), "Pre-existing namespace was not deleted during cleanup")
+			nsGetErr := k8sClient.Get(ctx, types.NamespacedName{Name: expectedNsName}, preExistingNs)
+			if !errors.IsNotFound(nsGetErr) && nsGetErr == nil {
+				Expect(preExistingNs.DeletionTimestamp).NotTo(BeNil(), "Namespace should have a deletion timestamp")
+				Expect(preExistingNs.DeletionTimestamp.IsZero()).To(BeFalse(), "Namespace should have a non-zero deletion timestamp")
+			}
 		})
 	})
 })

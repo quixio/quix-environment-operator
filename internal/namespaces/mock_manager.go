@@ -56,12 +56,10 @@ func (m *MockNamespaceManager) IsNamespaceDeleted(namespace *corev1.Namespace, e
 	if m.IsNamespaceDeletedFunc != nil {
 		return m.IsNamespaceDeletedFunc(namespace, err)
 	}
-	if m.DefaultManager != nil {
-		return m.DefaultManager.IsNamespaceDeleted(namespace, err)
-	}
 	// Default implementation if no other behavior is specified
 	if err != nil {
 		return errors.IsNotFound(err)
 	}
-	return namespace == nil
+	// Also check the DeletionTimestamp in the default fallback
+	return namespace == nil || !namespace.DeletionTimestamp.IsZero()
 }

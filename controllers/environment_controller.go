@@ -454,7 +454,7 @@ func (r *EnvironmentReconciler) handleDeletion(ctx context.Context, env *quixiov
 	// Check if the namespace exists
 	namespace, nsErr := r.getNamespace(ctx, namespaceName)
 
-	// If namespace is already gone or being deleted, we can proceed with finalizer removal
+	// If namespace is already deleted, we can proceed with finalizer removal
 	if r.NamespaceManager().IsNamespaceDeleted(namespace, nsErr) {
 		logger.Info("Namespace already deleted or being deleted")
 
