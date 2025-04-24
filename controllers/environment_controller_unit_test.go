@@ -555,6 +555,15 @@ func TestHandleDeletion_NamespaceAlreadyDeleted(t *testing.T) {
 	mockClient.On("Get", mock.Anything, mock.AnythingOfType("types.NamespacedName"), mock.AnythingOfType("*v1.Namespace")).
 		Return(k8serrors.NewNotFound(schema.GroupResource{Resource: "namespaces"}, "test-suffix"))
 
+	// Add expectation for refetching the Environment before removing finalizer
+	mockClient.On("Get", mock.Anything, mock.AnythingOfType("types.NamespacedName"), mock.AnythingOfType("*v1.Environment")).
+		Run(func(args mock.Arguments) {
+			// Populate the passed-in environment pointer with the test env
+			obj := args.Get(2).(*quixiov1.Environment)
+			*obj = *env
+		}).
+		Return(nil)
+
 	// For updating the Environment CR (to remove finalizer)
 	mockClient.On("Update", mock.Anything, mock.AnythingOfType("*v1.Environment"), mock.Anything).
 		Run(func(args mock.Arguments) {

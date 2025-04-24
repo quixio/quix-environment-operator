@@ -686,4 +686,97 @@ var _ = Describe("Environment controller", func() {
 			Expect(k8sClient.Delete(ctx, createdEnv)).Should(Succeed())
 		})
 	})
+
+	Context("When a namespace with the target name already exists", func() {
+		It("Should fail Environment creation and not modify the existing namespace", func() {
+			By("Creating a namespace manually")
+			ctx := context.Background()
+			envID := "test-collision"
+			expectedNsName := fmt.Sprintf("%s%s", envID, testConfig.NamespaceSuffix)
+			preExistingNs := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: expectedNsName,
+					Labels: map[string]string{
+						"pre-existing": "true", // Label to identify this namespace
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, preExistingNs)).Should(Succeed(), "Failed to create pre-existing namespace")
+
+			// Ensure namespace is created before proceeding
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: expectedNsName}, &corev1.Namespace{})
+				return err == nil
+			}, timeout, interval).Should(BeTrue(), "Pre-existing namespace not found")
+
+			By("Creating an Environment resource targeting the existing namespace name")
+			env := createTestEnvironment(envID, nil, nil)
+			env.Name = "collision-test-env" // Ensure unique Environment CR name
+			Expect(k8sClient.Create(ctx, env)).Should(Succeed(), "Failed to create Environment CR")
+
+			envLookupKey := types.NamespacedName{Name: env.Name, Namespace: testNamespace}
+			createdEnv := &quixiov1.Environment{}
+
+			By("Verifying the Environment enters CreateFailed phase")
+			Eventually(func() quixiov1.EnvironmentPhase {
+				err := k8sClient.Get(ctx, envLookupKey, createdEnv)
+				if err != nil {
+					return ""
+				}
+				return createdEnv.Status.Phase
+			}, timeout, interval).Should(Equal(quixiov1.PhaseCreateFailed), "Environment phase should be CreateFailed")
+
+			By("Verifying the Environment has an error message")
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, envLookupKey, createdEnv)
+				if err != nil {
+					return false
+				}
+				return strings.Contains(createdEnv.Status.ErrorMessage, "already exists and is not managed by this operator")
+			}, timeout, interval).Should(BeTrue(), "Expected error message about existing unmanaged namespace")
+
+			By("Verifying the Ready condition is False")
+			Eventually(func() metav1.ConditionStatus {
+				err := k8sClient.Get(ctx, envLookupKey, createdEnv)
+				if err != nil {
+					return metav1.ConditionUnknown
+				}
+				for _, cond := range createdEnv.Status.Conditions {
+					if cond.Type == "Ready" {
+						return cond.Status
+					}
+				}
+				return metav1.ConditionUnknown
+			}, timeout, interval).Should(Equal(metav1.ConditionFalse), "Ready condition should be False")
+
+			By("Verifying the pre-existing namespace was not modified")
+			retrievedNs := &corev1.Namespace{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: expectedNsName}, retrievedNs)).Should(Succeed(), "Failed to retrieve namespace after Environment creation attempt")
+			Expect(retrievedNs.Labels).To(HaveKeyWithValue("pre-existing", "true"), "Namespace should retain its original labels")
+			Expect(retrievedNs.Labels).NotTo(HaveKey("quix.io/managed-by"), "Namespace should not have operator labels added")
+			Expect(retrievedNs.DeletionTimestamp).To(BeNil(), "Namespace should not be marked for deletion")
+
+			By("Deleting the Environment CR")
+			Expect(k8sClient.Delete(ctx, createdEnv)).Should(Succeed(), "Failed to delete Environment CR")
+
+			By("Ensuring the Environment CR is deleted")
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, envLookupKey, createdEnv)
+				return errors.IsNotFound(err)
+			}, timeout, interval).Should(BeTrue(), "Environment CR was not deleted")
+
+			By("Verifying the pre-existing namespace still exists and was not deleted")
+			Consistently(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{Name: expectedNsName}, retrievedNs)
+			}, time.Second*2, interval).Should(Succeed(), "Namespace should consistently exist after Environment CR deletion")
+			Expect(retrievedNs.DeletionTimestamp).To(BeNil(), "Namespace should still not be marked for deletion")
+
+			By("Cleaning up the pre-existing namespace")
+			Expect(k8sClient.Delete(ctx, preExistingNs)).Should(Succeed(), "Failed to delete pre-existing namespace during cleanup")
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: expectedNsName}, retrievedNs)
+				return errors.IsNotFound(err)
+			}, timeout, interval).Should(BeTrue(), "Pre-existing namespace was not deleted during cleanup")
+		})
+	})
 })

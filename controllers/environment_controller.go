@@ -31,7 +31,9 @@ import (
 
 const (
 	// Finalizer for environment resources
-	EnvironmentFinalizer = "environment.quix.io/finalizer"
+	EnvironmentFinalizer = "quix.io/environment-finalizer"
+	ManagedByLabel       = "quix.io/managed-by"
+	OperatorName         = "quix-environment-operator"
 )
 
 // EnvironmentReconciler reconciles an Environment object
@@ -198,6 +200,30 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 	}
 
+	// Check if the fetched namespace is actually managed by this operator
+	if namespace != nil && !r.NamespaceManager().IsNamespaceDeleted(namespace, nsErr) {
+		managedLabel, exists := namespace.Labels[ManagedByLabel]
+		if !exists || managedLabel != OperatorName {
+			// Namespace exists but is not managed by us. This is a collision.
+			collisionErr := fmt.Errorf("namespace '%s' already exists and is not managed by this operator", namespaceName)
+			r.Recorder.Eventf(env, corev1.EventTypeWarning, "CollisionDetected", "Namespace %s already exists and is not managed by this operator", namespaceName)
+
+			// Determine appropriate phase based on current state
+			phase := env.Status.Phase
+			if phase == "" || phase == quixiov1.PhaseCreating {
+				phase = quixiov1.PhaseCreateFailed
+			} else {
+				phase = quixiov1.PhaseUpdateFailed // If it was already Ready/Updating, fail the update
+			}
+
+			r.StatusUpdater().SetErrorStatus(ctx, env, phase,
+				status.ConditionTypeReady, collisionErr, "Namespace collision detected")
+
+			return ctrl.Result{}, nil // Stop reconciliation for this Environment
+		}
+		// If label exists and matches, proceed normally
+	}
+
 	// Check if the namespace is pending deletion
 	if r.NamespaceManager().IsNamespaceDeleted(namespace, nsErr) {
 		// If in deletion flow, proceed normally
@@ -207,9 +233,25 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			// Update status to reflect that resources are being cleaned up
 			r.StatusUpdater().SetSuccessStatus(ctx, env, status.ConditionTypeReady, "Namespace deletion in progress")
 
+			// Refetch the latest version of the Environment resource to avoid conflicts
+			latestEnv := &quixiov1.Environment{}
+			if err := r.Get(ctx, types.NamespacedName{Name: env.Name, Namespace: env.Namespace}, latestEnv); err != nil {
+				if errors.IsNotFound(err) {
+					logger.Info("Environment resource already deleted")
+					return ctrl.Result{}, nil // Already deleted, nothing more to do
+				}
+				logger.Error(err, "Failed to refetch Environment before finalizer removal")
+				return ctrl.Result{RequeueAfter: 2 * time.Second}, err
+			}
+
 			// Remove our finalizer to allow the Environment to be deleted
-			controllerutil.RemoveFinalizer(env, EnvironmentFinalizer)
-			if err := r.Update(ctx, env); err != nil {
+			controllerutil.RemoveFinalizer(latestEnv, EnvironmentFinalizer)
+			if err := r.Update(ctx, latestEnv); err != nil {
+				// Check if the error is due to the resource being modified again
+				if errors.IsConflict(err) {
+					logger.Info("Conflict detected while removing finalizer, requeuing")
+					return ctrl.Result{Requeue: true}, nil
+				}
 				logger.Error(err, "Failed to remove finalizer")
 				return ctrl.Result{RequeueAfter: 2 * time.Second}, err
 			}
@@ -419,9 +461,25 @@ func (r *EnvironmentReconciler) handleDeletion(ctx context.Context, env *quixiov
 		// Update status conditions
 		r.StatusUpdater().SetSuccessStatus(ctx, env, status.ConditionTypeNamespaceDeleted, "Namespace deletion completed")
 
+		// Refetch the latest version of the Environment resource to avoid conflicts
+		latestEnv := &quixiov1.Environment{}
+		if err := r.Get(ctx, types.NamespacedName{Name: env.Name, Namespace: env.Namespace}, latestEnv); err != nil {
+			if errors.IsNotFound(err) {
+				logger.Info("Environment resource already deleted")
+				return ctrl.Result{}, nil // Already deleted, nothing more to do
+			}
+			logger.Error(err, "Failed to refetch Environment before finalizer removal")
+			return ctrl.Result{RequeueAfter: 2 * time.Second}, err
+		}
+
 		// Remove our finalizer to allow the Environment to be deleted
-		controllerutil.RemoveFinalizer(env, EnvironmentFinalizer)
-		if err := r.Update(ctx, env); err != nil {
+		controllerutil.RemoveFinalizer(latestEnv, EnvironmentFinalizer)
+		if err := r.Update(ctx, latestEnv); err != nil {
+			// Check if the error is due to the resource being modified again
+			if errors.IsConflict(err) {
+				logger.Info("Conflict detected while removing finalizer, requeuing")
+				return ctrl.Result{Requeue: true}, nil
+			}
 			logger.Error(err, "Failed to remove finalizer")
 			return ctrl.Result{RequeueAfter: 2 * time.Second}, err
 		}
@@ -430,33 +488,70 @@ func (r *EnvironmentReconciler) handleDeletion(ctx context.Context, env *quixiov
 		return ctrl.Result{}, nil
 	}
 
-	// Namespace exists and is not being deleted, try to delete it
+	// Namespace exists and is not being deleted, try to delete it ONLY if managed by us
 	if nsErr == nil {
-		logger.Info("Deleting namespace")
+		managedLabel, exists := namespace.Labels[ManagedByLabel]
+		if exists && managedLabel == OperatorName {
+			// Namespace is managed by us, proceed with deletion
+			logger.Info("Deleting managed namespace")
 
-		// Set deletion timestamp update to help garbage collection
-		namespace.SetFinalizers(nil)
-		if err := r.Update(ctx, namespace); err != nil {
-			if !errors.IsNotFound(err) {
-				logger.Error(err, "Failed to remove finalizers from namespace")
+			// Set deletion timestamp update to help garbage collection
+			namespace.SetFinalizers(nil) // Attempt to remove finalizers we might not own
+			if err := r.Update(ctx, namespace); err != nil {
+				if !errors.IsNotFound(err) {
+					logger.Error(err, "Failed to remove finalizers from namespace")
+				}
 			}
-		}
 
-		if err := r.Delete(ctx, namespace); err != nil {
-			if errors.IsNotFound(err) {
-				logger.Info("Namespace already deleted")
-			} else {
-				logger.Error(err, "Failed to delete namespace")
-				return ctrl.Result{RequeueAfter: 5 * time.Second}, err
+			if err := r.Delete(ctx, namespace); err != nil {
+				if errors.IsNotFound(err) {
+					logger.Info("Managed namespace already deleted")
+				} else {
+					logger.Error(err, "Failed to delete managed namespace")
+					return ctrl.Result{RequeueAfter: 5 * time.Second}, err
+				}
 			}
-		}
 
-		// Record event for deletion
-		r.Recorder.Event(env, corev1.EventTypeNormal, "NamespaceDeleted", "Namespace deletion initiated")
+			// Record event for deletion
+			r.Recorder.Event(env, corev1.EventTypeNormal, "NamespaceDeleted", "Managed namespace deletion initiated")
+			// Requeue to check later if the namespace is fully deleted
+			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+		} else {
+			// Namespace exists but is not managed by us. Skip deletion.
+			logger.Info("Skipping deletion of unmanaged namespace", "namespace", namespaceName)
+			// Proceed to finalizer removal as the unmanaged namespace is not our responsibility
+		}
 	}
 
-	// Requeue to check later if the namespace is fully deleted
-	return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+	logger.Info("Proceeding to remove finalizer as namespace is gone or unmanaged")
+
+	// Refetch the latest version of the Environment resource to avoid conflicts
+	latestEnv := &quixiov1.Environment{}
+	if err := r.Get(ctx, types.NamespacedName{Name: env.Name, Namespace: env.Namespace}, latestEnv); err != nil {
+		if errors.IsNotFound(err) {
+			logger.Info("Environment resource already deleted while attempting finalizer removal")
+			return ctrl.Result{}, nil // Already deleted, nothing more to do
+		}
+		logger.Error(err, "Failed to refetch Environment before finalizer removal")
+		return ctrl.Result{RequeueAfter: 2 * time.Second}, err
+	}
+
+	// Remove our finalizer to allow the Environment to be deleted
+	controllerutil.RemoveFinalizer(latestEnv, EnvironmentFinalizer)
+	if err := r.Update(ctx, latestEnv); err != nil {
+		if !errors.IsNotFound(err) {
+			// Check if the error is due to the resource being modified again
+			if errors.IsConflict(err) {
+				logger.Info("Conflict detected while removing finalizer, requeuing")
+				return ctrl.Result{Requeue: true}, nil
+			}
+			logger.Error(err, "Failed to remove finalizer")
+			return ctrl.Result{RequeueAfter: 2 * time.Second}, err
+		}
+	}
+
+	logger.Info("Finalizer removed, allowing Environment resource to be deleted")
+	return ctrl.Result{}, nil
 }
 
 func ptr(i int64) *int64 {
