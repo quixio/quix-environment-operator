@@ -569,6 +569,7 @@ func TestHandleDeletion_NamespaceAlreadyDeleted(t *testing.T) {
 
 	// Create status updater mock
 	statusUpdater := &MockStatusUpdater{}
+	statusUpdater.On("SetSuccessStatus", mock.Anything, mock.AnythingOfType("*v1.Environment"), "NamespaceDeleted", "Namespace deletion completed").Return()
 
 	// Create the reconciler with constructor
 	reconciler, err := NewEnvironmentReconciler(
@@ -640,6 +641,7 @@ func TestHandleDeletion_NamespaceHasDeletionTimestamp(t *testing.T) {
 
 	// Create status updater mock
 	statusUpdater := &MockStatusUpdater{}
+	statusUpdater.On("SetSuccessStatus", mock.Anything, mock.AnythingOfType("*v1.Environment"), "NamespaceDeleted", "Namespace deletion completed").Return()
 
 	// Create the reconciler with constructor
 	reconciler, err := NewEnvironmentReconciler(

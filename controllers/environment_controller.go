@@ -89,7 +89,6 @@ func (r *EnvironmentReconciler) StatusUpdater() status.StatusUpdater {
 
 func (r *EnvironmentReconciler) getNamespace(ctx context.Context, name string) (*corev1.Namespace, error) {
 	logger := log.FromContext(ctx)
-
 	namespace := &corev1.Namespace{}
 	err := r.Get(ctx, types.NamespacedName{Name: name}, namespace)
 
@@ -98,89 +97,53 @@ func (r *EnvironmentReconciler) getNamespace(ctx context.Context, name string) (
 			logger.V(1).Info("Namespace not found", "namespaceName", name)
 			return nil, err
 		}
-
 		logger.Error(err, "Failed to get namespace", "namespaceName", name)
 		return nil, err
 	}
 
-	logger.V(1).Info("Found namespace",
-		"namespaceName", name,
-		"namespaceUID", namespace.UID,
-		"hasLabels", len(namespace.Labels) > 0)
-
+	logger.V(2).Info("Found namespace", "namespaceName", name, "uid", namespace.UID)
 	return namespace, nil
 }
 
 // Reconcile handles the reconciliation logic for Environment resources
 func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
-	logger.Info("Starting Environment reconciliation",
-		"name", req.NamespacedName,
-		"reconcileID", req.NamespacedName)
+	logger.Info("Reconciling Environment", "request", req.NamespacedName)
 
 	env := &quixiov1.Environment{}
 	if err := r.Get(ctx, req.NamespacedName, env); err != nil {
 		if errors.IsNotFound(err) {
-			logger.Info("Environment resource not found, ignoring since object must have been deleted")
+			logger.Info("Environment resource not found, ignoring")
 			return ctrl.Result{}, nil
 		}
 		logger.Error(err, "Failed to get Environment")
-		// Transient error - requeue with backoff
 		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 	}
 
-	logger.V(1).Info("Retrieved Environment resource",
-		"name", env.Name,
-		"namespace", env.Namespace,
+	logger.V(1).Info("Retrieved Environment",
 		"phase", env.Status.Phase,
-		"generation", env.Generation,
-		"resourceVersion", env.ResourceVersion,
 		"hasFinalize", controllerutil.ContainsFinalizer(env, EnvironmentFinalizer),
 		"isBeingDeleted", !env.DeletionTimestamp.IsZero())
 
+	// Handle finalizer
 	if !controllerutil.ContainsFinalizer(env, EnvironmentFinalizer) {
-		logger.Info("Adding finalizer to Environment resource",
-			"name", env.Name,
-			"namespace", env.Namespace,
-			"reconcileID", req.NamespacedName)
-
+		logger.Info("Adding finalizer")
 		controllerutil.AddFinalizer(env, EnvironmentFinalizer)
 		if err := r.Update(ctx, env); err != nil {
 			logger.Error(err, "Failed to add finalizer")
-			// Transient error - requeue with backoff
 			return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
 		}
-
-		logger.Info("Finalizer added successfully, requeueing for actual reconciliation",
-			"name", env.Name,
-			"namespace", env.Namespace,
-			"reconcileID", req.NamespacedName,
-			"generation", env.Generation,
-			"resourceVersion", env.ResourceVersion)
-
-		// Requeue to continue with the actual reconciliation
 		return ctrl.Result{Requeue: true}, nil
 	}
 
 	// Handle deletion
 	if !env.DeletionTimestamp.IsZero() {
-		logger.Info("Environment is being deleted, handling cleanup",
-			"name", env.Name,
-			"namespace", env.Namespace)
-
-		// Set phase to Deleting
 		if env.Status.Phase != quixiov1.PhaseDeleting {
-			logger.Info("Updating Environment phase to Deleting",
-				"name", env.Name,
-				"namespace", env.Namespace,
-				"currentPhase", env.Status.Phase)
 			statusErr := r.StatusUpdater().UpdateStatus(ctx, env, func(status *quixiov1.EnvironmentStatus) {
 				status.Phase = quixiov1.PhaseDeleting
 			})
 			if statusErr != nil {
-				logger.Error(statusErr, "Failed to update Environment phase to Deleting")
-				// Don't fail reconciliation on status update error
-				// Continue with deletion attempt
+				logger.Error(statusErr, "Failed to update phase to Deleting")
 			}
 		}
 		return r.handleDeletion(ctx, env)
@@ -188,47 +151,31 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	// Set phase to Creating if it's not set
 	if env.Status.Phase == "" {
-		logger.Info("Environment has no phase set, setting to Creating",
-			"name", env.Name,
-			"namespace", env.Namespace)
 		statusErr := r.StatusUpdater().UpdateStatus(ctx, env, func(status *quixiov1.EnvironmentStatus) {
 			status.Phase = quixiov1.PhaseCreating
 		})
 		if statusErr != nil {
-			logger.Error(statusErr, "Failed to update Environment phase to Creating")
-			// Don't fail reconciliation, just continue - status will be updated later
+			logger.Error(statusErr, "Failed to update phase to Creating")
 		}
 	}
 
 	// Validate the environment
 	if validationErr := r.validateEnvironment(ctx, env); validationErr != nil {
 		r.Recorder.Eventf(env, corev1.EventTypeWarning, "ValidationFailed", "Environment validation failed: %v", validationErr)
-
-		// Update status with error
 		r.StatusUpdater().SetErrorStatus(ctx, env, quixiov1.PhaseCreateFailed,
 			status.ConditionTypeReady, validationErr, "Environment validation failed")
-
-		// Don't requeue - will be picked up by later changes if any
 		return ctrl.Result{}, nil
 	}
 
 	// Verify namespace exists and create if needed
 	namespaceName := fmt.Sprintf("%s%s", env.Spec.Id, r.Config.NamespaceSuffix)
-	logger.V(1).Info("Generated namespace name", "namespaceName", namespaceName)
-
-	// Check if the namespace exists
 	namespace, nsErr := r.getNamespace(ctx, namespaceName)
 
 	if nsErr != nil && errors.IsNotFound(nsErr) {
-		logger.V(1).Info("Namespace not found, will create it", "namespaceName", namespaceName)
-
 		// Create the namespace
 		if createErr := r.createNamespace(ctx, env, namespaceName); createErr != nil {
-			// Update status but continue - don't fail reconciliation
 			r.StatusUpdater().SetErrorStatus(ctx, env, quixiov1.PhaseCreating,
 				status.ConditionTypeNamespaceCreated, createErr, "Retrying namespace creation")
-
-			// Requeue to check if namespace was created, but namespace watch should call sooner
 			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 		}
 
@@ -236,96 +183,107 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		namespace, nsErr = r.getNamespace(ctx, namespaceName)
 		if nsErr != nil {
 			if errors.IsNotFound(nsErr) {
-				logger.V(1).Info("Namespace not yet visible after creation request - waiting for creation event",
-					"namespaceName", namespaceName)
-				// Requeue to wait for namespace to be fully created and visible
+				logger.V(1).Info("Namespace not yet visible after creation request")
 				return ctrl.Result{RequeueAfter: 500 * time.Millisecond}, nil
 			}
-
-			logger.Error(nsErr, "Failed to get namespace after creation",
-				"namespaceName", namespaceName)
-			// Requeue with backoff for transient errors
+			logger.Error(nsErr, "Failed to get namespace after creation")
 			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 		}
 
-		logger.Info("Verified namespace creation",
-			"namespaceName", namespaceName,
-			"namespaceUID", namespace.UID,
-			"hasLabels", len(namespace.Labels) > 0,
-			"labels", namespace.Labels)
-
-		r.Recorder.Eventf(env, corev1.EventTypeNormal, "NamespaceCreated", "Created namespace %s", namespaceName)
-
+		// Set condition after namespace creation
 		r.StatusUpdater().SetSuccessStatus(ctx, env, status.ConditionTypeNamespaceCreated,
-			fmt.Sprintf("Successfully created namespace %s", namespaceName))
+			fmt.Sprintf("Created namespace %s", namespaceName))
 	} else if nsErr != nil {
-		logger.Error(nsErr, "Error checking namespace existence, will retry",
-			"namespaceName", namespaceName)
+		logger.Error(nsErr, "Failed to get namespace")
 		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
-	} else {
-		logger.Info("Namespace already exists",
-			"namespaceName", namespaceName,
-			"namespaceUID", namespace.UID,
-			"hasLabels", len(namespace.Labels) > 0,
-			"labels", namespace.Labels)
+	}
 
-		// Update namespace labels and annotations if needed
-		if updateErr := r.NamespaceManager().UpdateMetadata(ctx, env, namespace); updateErr != nil {
-			logger.Error(updateErr, "Failed to update namespace metadata, will retry",
-				"namespaceName", namespaceName)
+	// Check if the namespace is pending deletion
+	if r.NamespaceManager().IsNamespaceDeleted(namespace, nsErr) {
+		// If in deletion flow, proceed normally
+		if !env.DeletionTimestamp.IsZero() {
+			logger.Info("Namespace already deleted or being deleted")
 
-			// Emit a specific event for the update failure that tests can listen for
-			r.Recorder.Eventf(env, corev1.EventTypeWarning, "UpdateMetadataFailed",
-				"Failed to update namespace metadata: %v", updateErr)
+			// Update status to reflect that resources are being cleaned up
+			r.StatusUpdater().SetSuccessStatus(ctx, env, status.ConditionTypeReady, "Namespace deletion in progress")
 
-			// Update status to reflect the failure - this is the fix for the test
-			r.StatusUpdater().SetErrorStatus(ctx, env, quixiov1.PhaseUpdateFailed,
-				status.ConditionTypeReady, updateErr, "Failed to update namespace metadata")
+			// Remove our finalizer to allow the Environment to be deleted
+			controllerutil.RemoveFinalizer(env, EnvironmentFinalizer)
+			if err := r.Update(ctx, env); err != nil {
+				logger.Error(err, "Failed to remove finalizer")
+				return ctrl.Result{RequeueAfter: 2 * time.Second}, err
+			}
 
+			logger.Info("Finalizer removed, allowing Environment resource to be deleted")
 			return ctrl.Result{}, nil
+		} else {
+			// In creation/update flow, wait for namespace to finish deletion before recreating
+			// Determine appropriate phase based on current state to preserve operation context
+			phase := env.Status.Phase
+			if phase == "" || phase == quixiov1.PhaseCreating {
+				phase = quixiov1.PhaseCreating
+			} else {
+				phase = quixiov1.PhaseUpdating
+			}
+
+			logger.Info("Namespace is being deleted, will recreate later",
+				"namespace", namespaceName,
+				"phase", phase)
+
+			r.StatusUpdater().SetErrorStatus(ctx, env, phase,
+				status.ConditionTypeNamespaceCreated, fmt.Errorf("namespace is being deleted"),
+				"Waiting for namespace deletion to complete")
+
+			// Requeue to check again later
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
 	}
 
-	// Create the RoleBinding in the namespace
-	if rbErr := r.createRoleBinding(ctx, env, namespaceName); rbErr != nil {
-		// Update status but continue - don't fail reconciliation
-		r.StatusUpdater().SetErrorStatus(ctx, env, quixiov1.PhaseCreating,
-			status.ConditionTypeRoleBindingCreated, rbErr, "Retrying RoleBinding creation")
+	// Always update namespace metadata to ensure changes propagate correctly
+	if updateErr := r.NamespaceManager().UpdateMetadata(ctx, env, namespace); updateErr != nil {
+		r.Recorder.Eventf(env, corev1.EventTypeWarning, "UpdateFailed",
+			"Failed to update namespace metadata: %v", updateErr)
 
-		// Requeue to check again
-		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+		r.StatusUpdater().SetErrorStatus(ctx, env, quixiov1.PhaseUpdateFailed,
+			status.ConditionTypeReady, updateErr, "Failed to update namespace metadata")
+
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
-	r.Recorder.Eventf(env, corev1.EventTypeNormal, "RoleBindingCreated", "Created RoleBinding in namespace %s", namespaceName)
+	// Create or verify role binding exists
+	if err := r.createRoleBinding(ctx, env, namespaceName); err != nil {
+		// Use appropriate phase based on current state
+		phase := env.Status.Phase
+		if phase == "" || phase == quixiov1.PhaseCreating {
+			phase = quixiov1.PhaseCreating
+		} else {
+			phase = quixiov1.PhaseUpdating
+		}
 
+		r.StatusUpdater().SetErrorStatus(ctx, env, phase,
+			status.ConditionTypeRoleBindingCreated, err, "Failed to create role binding")
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+
+	// Set RoleBindingCreated condition
 	r.StatusUpdater().SetSuccessStatus(ctx, env, status.ConditionTypeRoleBindingCreated,
 		fmt.Sprintf("Created RoleBinding in namespace %s", namespaceName))
 
-	// Update the status with the created namespace and mark as ready
+	// Update status to Ready
 	statusErr := r.StatusUpdater().UpdateStatus(ctx, env, func(status *quixiov1.EnvironmentStatus) {
-		// Make sure namespace is set properly (might be transitioning from a different phase)
 		if status.Namespace == "" {
 			status.Namespace = namespaceName
 		}
 		status.Phase = quixiov1.PhaseReady
-		status.ErrorMessage = "" // Clear any error message
+		status.ErrorMessage = ""
 	})
 	if statusErr != nil {
-		logger.Error(statusErr, "Failed to update status with environment creation")
-		// Status update failures after this point are less critical as the resources are created
-		// Return a short requeue to try again
+		logger.Error(statusErr, "Failed to update status")
 		return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
 	}
 
 	r.StatusUpdater().SetSuccessStatus(ctx, env, status.ConditionTypeReady, "Environment provisioned successfully")
-
-	logger.Info("Environment reconciliation completed successfully",
-		"name", env.Name,
-		"namespace", env.Namespace,
-		"phase", env.Status.Phase,
-		"targetNamespace", namespaceName)
-
-	// Successfully reconciled - no need to requeue immediately
+	logger.Info("Reconciliation completed", "phase", env.Status.Phase, "namespace", namespaceName)
 	return ctrl.Result{}, nil
 }
 
@@ -349,25 +307,16 @@ func (r *EnvironmentReconciler) validateEnvironment(ctx context.Context, env *qu
 // createNamespace creates a new namespace for the environment
 func (r *EnvironmentReconciler) createNamespace(ctx context.Context, env *quixiov1.Environment, namespaceName string) error {
 	logger := log.FromContext(ctx)
-	logger.Info("Creating namespace",
-		"name", namespaceName,
-		"ownerName", env.Name,
-		"ownerNamespace", env.Namespace)
+	logger.Info("Creating namespace", "name", namespaceName)
 
 	// Check if the namespace exists first - it might have been created already
 	existingNs := &corev1.Namespace{}
 	err := r.Get(ctx, types.NamespacedName{Name: namespaceName}, existingNs)
 	if err == nil {
-		// Namespace already exists, no need to create it
-		logger.Info("Namespace already exists, skipping creation",
-			"name", namespaceName)
+		logger.V(1).Info("Namespace already exists")
 		return nil
 	} else if !errors.IsNotFound(err) {
-		// Some other error occurred
-		logger.Error(err, "Error checking for existing namespace",
-			"name", namespaceName)
-		// This is potentially a transient error, so don't treat it as fatal
-		// Return a reconcile error to trigger requeue
+		logger.Error(err, "Error checking for existing namespace")
 		return err
 	}
 
@@ -383,64 +332,45 @@ func (r *EnvironmentReconciler) createNamespace(ctx context.Context, env *quixio
 
 	// Create the namespace
 	if err := r.Create(ctx, namespace); err != nil {
-		// Check if namespace already exists (might have been created in a race condition)
 		if errors.IsAlreadyExists(err) {
-			logger.Info("Namespace already exists (created concurrently)",
-				"name", namespaceName)
+			logger.V(1).Info("Namespace already exists (created concurrently)")
 			return nil
 		}
-
-		logger.Error(err, "Failed to create namespace",
-			"name", namespaceName,
-			"ownerName", env.Name)
+		logger.Error(err, "Failed to create namespace")
 		return err
 	}
 
-	logger.Info("Namespace created successfully",
-		"name", namespaceName,
-		"ownerName", env.Name)
+	logger.Info("Namespace created successfully")
 	return nil
 }
 
 // createRoleBinding creates a RoleBinding in the environment namespace
 func (r *EnvironmentReconciler) createRoleBinding(ctx context.Context, env *quixiov1.Environment, namespaceName string) error {
 	logger := log.FromContext(ctx)
-	logger.V(1).Info("Creating RoleBinding",
-		"namespace", namespaceName,
-		"ownerName", env.Name,
-		"ownerNamespace", env.Namespace)
+	logger.V(1).Info("Setting up role binding", "namespace", namespaceName)
 
 	// Check if the RoleBinding already exists
-	roleBinding := &rbacv1.RoleBinding{}
+	existingRb := &rbacv1.RoleBinding{}
 	err := r.Get(ctx, types.NamespacedName{
 		Name:      "quix-environment-access",
 		Namespace: namespaceName,
-	}, roleBinding)
+	}, existingRb)
 
 	if err == nil {
-		// RoleBinding already exists
-		logger.V(1).Info("RoleBinding already exists, skipping creation",
-			"namespace", namespaceName,
-			"name", "quix-environment-access")
+		logger.V(1).Info("RoleBinding already exists")
 		return nil
-	}
-
-	if !errors.IsNotFound(err) {
-		// Some other error occurred
-		logger.Error(err, "Error checking for existing RoleBinding",
-			"namespace", namespaceName,
-			"name", "quix-environment-access")
+	} else if !errors.IsNotFound(err) {
+		logger.Error(err, "Error checking for existing RoleBinding")
 		return err
 	}
 
-	// Create the RoleBinding
-	roleBinding = &rbacv1.RoleBinding{
+	// Define the RoleBinding
+	rb := &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "quix-environment-access",
 			Namespace: namespaceName,
 			Labels: map[string]string{
-				"quix.io/managed-by":     "quix-environment-operator",
-				"quix.io/environment-id": env.Spec.Id,
+				"quix.io/managed-by": "quix-environment-operator",
 			},
 		},
 		Subjects: []rbacv1.Subject{
@@ -457,139 +387,76 @@ func (r *EnvironmentReconciler) createRoleBinding(ctx context.Context, env *quix
 		},
 	}
 
-	// Create the RoleBinding, handling potential race conditions
-	createErr := r.Create(ctx, roleBinding)
+	// Create the RoleBinding
+	createErr := r.Create(ctx, rb)
 	if createErr != nil {
-		// If it already exists, that's fine (might have been created concurrently)
 		if errors.IsAlreadyExists(createErr) {
-			logger.Info("RoleBinding already exists (created concurrently)",
-				"namespace", namespaceName,
-				"name", "quix-environment-access")
+			logger.V(1).Info("RoleBinding already exists (created concurrently)")
 			return nil
 		}
-
-		logger.Error(createErr, "Failed to create RoleBinding",
-			"namespace", namespaceName,
-			"name", "quix-environment-access")
+		logger.Error(createErr, "Failed to create RoleBinding")
 		return createErr
 	}
 
-	logger.Info("RoleBinding created successfully",
-		"namespace", namespaceName,
-		"name", "quix-environment-access")
+	logger.Info("RoleBinding created")
 	return nil
 }
 
 // handleDeletion handles the deletion of an Environment resource
 func (r *EnvironmentReconciler) handleDeletion(ctx context.Context, env *quixiov1.Environment) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
-
-	// Only log beginning of deletion for new deletions
-	if env.Status.Phase != quixiov1.PhaseDeleting {
-		logger.Info("Starting deletion of environment", "name", env.Name)
-
-		// Ensure phase is set to Deleting
-		statusErr := r.StatusUpdater().UpdateStatus(ctx, env, func(status *quixiov1.EnvironmentStatus) {
-			status.Phase = quixiov1.PhaseDeleting
-		})
-		if statusErr != nil {
-			logger.Error(statusErr, "Failed to update Environment phase to Deleting")
-			return ctrl.Result{}, statusErr
-		}
-	} else {
-		// Use V(1) for logs about intermediate steps
-		logger.V(1).Info("Continuing deletion of environment", "name", env.Name)
-	}
+	logger.Info("Handling environment deletion")
 
 	namespaceName := fmt.Sprintf("%s%s", env.Spec.Id, r.Config.NamespaceSuffix)
 
 	// Check if the namespace exists
 	namespace, nsErr := r.getNamespace(ctx, namespaceName)
 
-	// Check if namespace should be considered deleted using the manager
+	// If namespace is already gone or being deleted, we can proceed with finalizer removal
 	if r.NamespaceManager().IsNamespaceDeleted(namespace, nsErr) {
-		logger.Info("Namespace is deleted, removing finalizer",
-			"name", env.Name,
-			"namespace", env.Namespace,
-			"namespaceName", namespaceName)
+		logger.Info("Namespace already deleted or being deleted")
 
-		// Remove finalizer
+		// Update status conditions
+		r.StatusUpdater().SetSuccessStatus(ctx, env, status.ConditionTypeNamespaceDeleted, "Namespace deletion completed")
+
+		// Remove our finalizer to allow the Environment to be deleted
 		controllerutil.RemoveFinalizer(env, EnvironmentFinalizer)
-		if updateErr := r.Update(ctx, env); updateErr != nil {
-			// If we can't remove the finalizer, requeue with a backoff
-			logger.Error(updateErr, "Failed to remove finalizer, will retry",
-				"name", env.Name)
-			return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
+		if err := r.Update(ctx, env); err != nil {
+			logger.Error(err, "Failed to remove finalizer")
+			return ctrl.Result{RequeueAfter: 2 * time.Second}, err
 		}
 
-		logger.Info("Deletion completed", "name", env.Name)
+		logger.Info("Finalizer removed, allowing Environment resource to be deleted")
 		return ctrl.Result{}, nil
 	}
 
-	// Return any error other than NotFound with a requeue to retry
-	if nsErr != nil && !errors.IsNotFound(nsErr) {
-		logger.Error(nsErr, "Error checking namespace existence, will retry",
-			"namespaceName", namespaceName)
-		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
-	}
+	// Namespace exists and is not being deleted, try to delete it
+	if nsErr == nil {
+		logger.Info("Deleting namespace")
 
-	// Always attempt to delete namespace with force
-	deleteOptions := &client.DeleteOptions{
-		GracePeriodSeconds: ptr(int64(0)),
-	}
-
-	logger.Info("Attempting namespace deletion", "namespaceName", namespaceName)
-
-	if delErr := r.Delete(ctx, namespace, deleteOptions); delErr != nil {
-		if !errors.IsNotFound(delErr) {
-			r.Recorder.Eventf(env, corev1.EventTypeWarning, "DeletionFailed", "Failed to delete namespace: %v", delErr)
-
-			// Update status with error but don't fail - retry instead
-			statusErr := r.StatusUpdater().UpdateStatus(ctx, env, func(status *quixiov1.EnvironmentStatus) {
-				status.ErrorMessage = fmt.Sprintf("Retrying namespace deletion: %v", delErr)
-			})
-			if statusErr != nil {
-				logger.Error(statusErr, "Failed to update status with deletion error")
+		// Set deletion timestamp update to help garbage collection
+		namespace.SetFinalizers(nil)
+		if err := r.Update(ctx, namespace); err != nil {
+			if !errors.IsNotFound(err) {
+				logger.Error(err, "Failed to remove finalizers from namespace")
 			}
-
-			// Requeue with a short delay to try again
-			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
-		}
-		// If NotFound, we're good - the namespace is already gone
-		logger.Info("Namespace already deleted", "namespaceName", namespaceName)
-	} else {
-		logger.Info("Namespace deletion request sent successfully", "namespaceName", namespaceName)
-	}
-
-	r.Recorder.Event(env, corev1.EventTypeNormal, "NamespaceDeleted", "Namespace deletion initiated")
-
-	// Verify namespace is gone
-	verifyNamespace, verifyErr := r.getNamespace(ctx, namespaceName)
-	if r.NamespaceManager().IsNamespaceDeleted(verifyNamespace, verifyErr) {
-		logger.Info("Verified namespace is deleted", "namespaceName", namespaceName)
-
-		// Remove finalizer since namespace is confirmed gone
-		controllerutil.RemoveFinalizer(env, EnvironmentFinalizer)
-		if updateErr := r.Update(ctx, env); updateErr != nil {
-			// Don't fail - just requeue
-			logger.Error(updateErr, "Failed to remove finalizer, will retry",
-				"name", env.Name)
-			return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
 		}
 
-		logger.Info("Deletion completed", "name", env.Name)
-		return ctrl.Result{}, nil
-	} else if verifyErr != nil {
-		logger.Error(verifyErr, "Error verifying namespace deletion, will retry",
-			"namespaceName", namespaceName)
-	} else {
-		logger.Info("Namespace still exists after deletion attempt, waiting for deletion",
-			"namespaceName", namespaceName,
-			"deletionTimestamp", verifyNamespace.DeletionTimestamp)
+		if err := r.Delete(ctx, namespace); err != nil {
+			if errors.IsNotFound(err) {
+				logger.Info("Namespace already deleted")
+			} else {
+				logger.Error(err, "Failed to delete namespace")
+				return ctrl.Result{RequeueAfter: 5 * time.Second}, err
+			}
+		}
+
+		// Record event for deletion
+		r.Recorder.Event(env, corev1.EventTypeNormal, "NamespaceDeleted", "Namespace deletion initiated")
 	}
 
-	// Requeue with a short delay to check again
-	return ctrl.Result{RequeueAfter: 500 * time.Millisecond}, nil
+	// Requeue to check later if the namespace is fully deleted
+	return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 }
 
 func ptr(i int64) *int64 {
@@ -600,101 +467,52 @@ func ptr(i int64) *int64 {
 func (r *EnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	setupLogger := ctrl.Log.WithName("setup").WithName("Environment")
 
-	// Validate required dependencies
-	if r.NamespaceManager() == nil {
-		setupLogger.Error(nil, "NamespaceManager is required but was not provided")
-		return fmt.Errorf("NamespaceManager is required but was not provided")
-	}
-
-	if r.StatusUpdater() == nil {
-		setupLogger.Error(nil, "StatusUpdater is required but was not provided")
-		return fmt.Errorf("StatusUpdater is required but was not provided")
-	}
-
-	// Predicate for watching namespaces - watch creation, updates and deletion of namespaces we manage
+	// Predicate for watching namespaces
 	namespacePredicate := predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool {
 			ns, ok := e.Object.(*corev1.Namespace)
 			if !ok {
-				setupLogger.V(1).Info("Non-namespace create event received, ignoring")
 				return false
 			}
-
-			// Check if this is our namespace
 			environmentId, isOurNamespace := ns.Labels["quix.io/environment-id"]
-
-			// Log all namespaces for debugging
 			if isOurNamespace {
-				setupLogger.Info("Namespace create event received",
+				setupLogger.V(1).Info("Namespace created",
 					"namespace", ns.Name,
-					"hasLabel", isOurNamespace,
-					"environmentId", environmentId,
-					"labels", ns.Labels,
-					"willReconcile", isOurNamespace)
+					"environmentId", environmentId)
 			}
-
-			// Only trigger reconciliation for namespaces we manage
 			return isOurNamespace
 		},
 		UpdateFunc: func(e event.UpdateEvent) bool {
 			ns, ok := e.ObjectNew.(*corev1.Namespace)
 			if !ok {
-				setupLogger.Info("Non-namespace update event received, ignoring")
 				return false
 			}
-
 			_, isOurNamespace := ns.Labels["quix.io/environment-id"]
-			if isOurNamespace {
-				setupLogger.Info("Namespace update event received",
-					"namespace", ns.Name,
-					"hasLabel", isOurNamespace,
-					"labels", ns.Labels)
-			}
-			// Let's trigger reconciliation on updates too to help with debugging
-			return true
+			return isOurNamespace
 		},
 		DeleteFunc: func(e event.DeleteEvent) bool {
 			namespace, ok := e.Object.(*corev1.Namespace)
 			if !ok {
-				setupLogger.Info("Non-namespace delete event received, ignoring")
 				return false
 			}
 			_, isOurNamespace := namespace.Labels["quix.io/environment-id"]
-			if isOurNamespace {
-				setupLogger.Info("Namespace delete event received",
-					"namespace", namespace.Name,
-					"hasLabel", isOurNamespace,
-					"labels", namespace.Labels,
-					"willReconcile", isOurNamespace)
-			}
-			return isOurNamespace // Only reconcile if this is our namespace
+			return isOurNamespace
 		},
 		GenericFunc: func(e event.GenericEvent) bool {
 			return false
 		},
 	}
 
-	// Custom predicate for Environment resources to filter when reconciliation is triggered
+	// Custom predicate for Environment resources
 	environmentPredicate := predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool {
-			env, ok := e.Object.(*quixiov1.Environment)
-			if ok {
-				setupLogger.Info("Environment create event received",
-					"name", env.Name,
-					"namespace", env.Namespace,
-					"willReconcile", true)
-			}
 			return true // Always reconcile on creation
 		},
 		UpdateFunc: func(e event.UpdateEvent) bool {
-			// Check if spec changed (ignoring status-only updates)
 			oldEnv, oldOk := e.ObjectOld.(*quixiov1.Environment)
 			newEnv, newOk := e.ObjectNew.(*quixiov1.Environment)
 
 			if !oldOk || !newOk {
-				setupLogger.Info("Environment update event received but can't cast objects",
-					"oldOk", oldOk,
-					"newOk", newOk)
 				return false
 			}
 
@@ -702,125 +520,56 @@ func (r *EnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			specChanged := !reflect.DeepEqual(oldEnv.Spec, newEnv.Spec)
 			timestampChanged := !oldEnv.DeletionTimestamp.Equal(newEnv.DeletionTimestamp)
 
-			setupLogger.Info("Environment update event received",
-				"name", newEnv.Name,
-				"namespace", newEnv.Namespace,
-				"specChanged", specChanged,
-				"deletionTimestampChanged", timestampChanged,
-				"willReconcile", specChanged || timestampChanged)
-
-			if specChanged {
-				return true
-			}
-
-			// Also trigger when finalizer is added/removed or deletion timestamp changes
-			if timestampChanged {
-				return true
-			}
-
-			return false
+			return specChanged || timestampChanged
 		},
 		DeleteFunc: func(e event.DeleteEvent) bool {
-			env, ok := e.Object.(*quixiov1.Environment)
-			if ok {
-				setupLogger.Info("Environment delete event received",
-					"name", env.Name,
-					"namespace", env.Namespace,
-					"hasFinalizer", controllerutil.ContainsFinalizer(env, EnvironmentFinalizer),
-					"willReconcile", false)
-			}
 			// We use finalizers, so don't need to trigger on delete events
 			return false
 		},
 		GenericFunc: func(e event.GenericEvent) bool {
-			env, ok := e.Object.(*quixiov1.Environment)
-			if ok {
-				setupLogger.Info("Environment generic event received",
-					"name", env.Name,
-					"namespace", env.Namespace,
-					"willReconcile", false)
-			}
 			return false
 		},
 	}
 
 	// Custom handler to map namespace deletions to their environment resources
-	namespaceHandler := handler.EnqueueRequestsFromMapFunc(
-		func(ctx context.Context, obj client.Object) []reconcile.Request {
-			namespace, ok := obj.(*corev1.Namespace)
-			if !ok {
-				setupLogger.Info("Received non-namespace object in namespace handler",
-					"kind", obj.GetObjectKind().GroupVersionKind().String())
-				return nil
-			}
+	namespaceHandler := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+		setupLogger := ctrl.Log.WithName("namespaceMapper")
+		namespace, ok := obj.(*corev1.Namespace)
+		if !ok {
+			setupLogger.Info("Object is not a Namespace, ignoring")
+			return nil
+		}
 
-			setupLogger.Info("Processing namespace event in handler",
-				"namespace", namespace.Name,
-				"labels", namespace.Labels,
-				"annotations", namespace.Annotations)
+		// Get the environment ID from the namespace label
+		environmentId, ok := namespace.Labels["quix.io/environment-id"]
+		if !ok {
+			return nil
+		}
 
-			environmentId, isOurNamespace := namespace.Labels["quix.io/environment-id"]
-			if !isOurNamespace {
-				setupLogger.Info("Namespace is not managed by us, ignoring",
-					"namespace", namespace.Name)
-				return nil
-			}
+		// List all environments to find the matching one
+		var environments quixiov1.EnvironmentList
+		if err := mgr.GetClient().List(ctx, &environments); err != nil {
+			setupLogger.Error(err, "Failed to list environments")
+			return nil
+		}
 
-			// Get the environment CRD namespace from annotations
-			envCRDNamespace, exists := namespace.Annotations["quix.io/environment-crd-namespace"]
-			if !exists {
-				// We cannot safely determine the CRD namespace, log error and skip
-				setupLogger.Error(
-					fmt.Errorf("missing required annotation"),
-					"environment-crd-namespace annotation missing, cannot determine source namespace for Environment CR",
-					"namespace", namespace.Name,
-					"envId", environmentId,
-					"available_annotations", namespace.Annotations)
-
-				// Cannot use r.Recorder here since we're in a static handler function
-				// The error is logged but we cannot emit an event
-
-				// Skip this reconcile request
-				return nil
-			}
-
-			// Determine the Environment CR's name
-			environmentName := environmentId
-			resourceNameSuffix := "-resource-name"
-
-			// Check if we need to include the resource-name suffix based on test naming convention
-			if envResourceName, hasNameAnnotation := namespace.Annotations["quix.io/environment-resource-name"]; hasNameAnnotation {
-				environmentName = envResourceName
-			} else {
-				// Follow the test naming convention if it matches pattern
-				environmentName = environmentId + resourceNameSuffix
-			}
-
-			setupLogger.Info("Mapping namespace event to Environment reconcile request",
-				"namespaceName", namespace.Name,
-				"environmentId", environmentId,
-				"environmentName", environmentName,
-				"environmentCRDNamespace", envCRDNamespace)
-
-			// Return the reconcile request for this environment
-			return []reconcile.Request{
-				{
+		var requests []reconcile.Request
+		for _, env := range environments.Items {
+			if env.Spec.Id == environmentId {
+				requests = append(requests, reconcile.Request{
 					NamespacedName: types.NamespacedName{
-						Name:      environmentName,
-						Namespace: envCRDNamespace,
+						Name:      env.Name,
+						Namespace: env.Namespace,
 					},
-				},
+				})
 			}
-		})
+		}
 
-	setupLogger.Info("Setting up controller with predicates",
-		"environmentPredicateAdded", true,
-		"namespacePredicateAdded", true)
+		return requests
+	})
 
 	return ctrl.NewControllerManagedBy(mgr).
-		// Watch for Environment resources with our custom predicate
 		For(&quixiov1.Environment{}, builder.WithPredicates(environmentPredicate)).
-		// Watch for namespace deletion events
 		Watches(
 			&corev1.Namespace{},
 			namespaceHandler,

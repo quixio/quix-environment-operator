@@ -24,6 +24,7 @@ const (
 	ConditionTypeReady              = "Ready"
 	ConditionTypeNamespaceCreated   = "NamespaceCreated"
 	ConditionTypeRoleBindingCreated = "RoleBindingCreated"
+	ConditionTypeNamespaceDeleted   = "NamespaceDeleted"
 
 	// Condition reasons
 	ReasonSucceeded       = "Succeeded"
