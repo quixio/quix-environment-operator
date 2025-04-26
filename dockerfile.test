@@ -1,0 +1,49 @@
+FROM golang:1.24.2-alpine
+
+# Install tools
+RUN apk add --no-cache curl bash git build-base tar
+
+# Setup envtest binaries
+ENV KUBEBUILDER_ASSETS=/usr/local/kubebuilder/bin
+ENV K8S_VERSION=1.28.0
+
+RUN mkdir -p ${KUBEBUILDER_ASSETS} && \
+    export ARCH=$(uname -m) && \   
+    case "$ARCH" in \
+        x86_64) export ARCH=amd64 ;; \
+        aarch64) export ARCH=arm64 ;; \
+        *) echo "Unsupported architecture: $ARCH" && exit 1 ;; \
+    esac && \
+    curl -sSLo envtest-bins.tar.gz "https://storage.googleapis.com/kubebuilder-tools/kubebuilder-tools-${K8S_VERSION}-linux-${ARCH}.tar.gz" && \
+    tar -zxvf envtest-bins.tar.gz && \
+    mv kubebuilder/bin/* ${KUBEBUILDER_ASSETS}/ && \
+    rm -rf kubebuilder envtest-bins.tar.gz
+
+# Set working dir 
+WORKDIR /app
+
+# Copy module files individually
+COPY go.mod ./
+
+# Download dependencies and generate go.sum
+RUN go mod download
+RUN go mod tidy
+
+# Copy the rest of the code
+COPY . .    
+
+# delete ./bin if present
+RUN if [ -d "./bin" ]; then rm -rf ./bin; fi
+
+# Set proper architecture for the build
+RUN export GOARCH=$(uname -m) && \   
+    case "$GOARCH" in \
+        x86_64) export GOARCH=amd64 ;; \
+        aarch64) export GOARCH=arm64 ;; \
+        *) echo "Unsupported architecture: $GOARCH" && exit 1 ;; \
+    esac && \
+    mkdir -p bin && \
+    echo "Building with GOARCH=$GOARCH" && \
+    make build
+
+ENTRYPOINT ["go", "test", "./...", "-v", "-coverprofile=cover.out"]

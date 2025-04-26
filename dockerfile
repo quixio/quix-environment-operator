@@ -1,0 +1,28 @@
+# Build stage
+FROM golang:1.24.2 AS builder
+
+WORKDIR /workspace
+
+# Copy only Go module files first
+COPY go.mod ./
+
+# Download dependencies and generate go.sum
+RUN go mod download
+RUN go mod tidy
+
+# Copy the rest of the code
+COPY . .
+
+# delete ./bin if present
+RUN if [ -d "./bin" ]; then rm -rf ./bin; fi
+
+# Build
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 make build
+
+# Runtime stage (minimal container)
+FROM gcr.io/distroless/static:nonroot
+WORKDIR /
+COPY --from=builder /workspace/bin/manager .
+USER nonroot:nonroot
+
+ENTRYPOINT ["/bin/manager"]

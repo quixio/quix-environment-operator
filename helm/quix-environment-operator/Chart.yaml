@@ -4,6 +4,7 @@ description: A Kubernetes operator for provisioning isolated application environ
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
+icon: https://quixstorageaccount.blob.core.windows.net/portal/img/quix_favicon.png
 keywords:
   - quix
   - environment

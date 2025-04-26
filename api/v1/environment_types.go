@@ -1,3 +1,5 @@
+// +kubebuilder:object:generate=true
+// +groupName=quix.io
 package v1
 
 import (
@@ -14,51 +16,42 @@ type EnvironmentSpec struct {
 	Id string `json:"id"`
 
 	// Annotations to apply to the created namespace
+	// All annotation keys must have the 'quix.io/' prefix
 	// +optional
+	// +kubebuilder:validation:XValidation:rule="self.all(k, k.startsWith('quix.io/'))",message="All annotation keys must have the 'quix.io/' prefix"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k == 'quix.io/created-by' || k == 'quix.io/environment-crd-namespace' || k == 'quix.io/environment-resource-name')",message="Cannot override protected annotations: quix.io/created-by, quix.io/environment-crd-namespace, quix.io/environment-resource-name"
 	Annotations map[string]string `json:"annotations,omitempty"`
 
 	// Labels to apply to the created namespace
+	// All label keys must have the 'quix.io/' prefix
 	// +optional
+	// +kubebuilder:validation:XValidation:rule="self.all(k, k.startsWith('quix.io/'))",message="All label keys must have the 'quix.io/' prefix"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k == 'quix.io/managed-by' || k == 'quix.io/environment-id' || k == 'quix.io/environment-name')",message="Cannot override protected labels: quix.io/managed-by, quix.io/environment-id, quix.io/environment-name"
 	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // EnvironmentPhase represents the current phase of the Environment
+// +kubebuilder:validation:Enum=Pending;InProgress;Ready;Failed;Deleting
 type EnvironmentPhase string
 
 const (
-	// PhaseCreating indicates the environment is being created
-	PhaseCreating EnvironmentPhase = "Creating"
-	// PhaseReady indicates the environment is ready for use
-	PhaseReady EnvironmentPhase = "Ready"
-	// PhaseCreateFailed indicates the environment creation failed
-	PhaseCreateFailed EnvironmentPhase = "CreateFailed"
-	// PhaseDeleting indicates the environment is being deleted
-	PhaseDeleting EnvironmentPhase = "Deleting"
-	// PhaseUpdating indicates the environment is being updated
-	PhaseUpdating EnvironmentPhase = "Updating"
-	// PhaseUpdateFailed indicates the environment update failed
-	PhaseUpdateFailed EnvironmentPhase = "UpdateFailed"
+	// EnvironmentPhasePending indicates the environment is pending
+	EnvironmentPhasePending EnvironmentPhase = "Pending"
+	// EnvironmentPhaseInProgress indicates the environment is in progress
+	EnvironmentPhaseInProgress EnvironmentPhase = "InProgress"
+	// EnvironmentPhaseReady indicates the environment is ready for use
+	EnvironmentPhaseReady EnvironmentPhase = "Ready"
+	// EnvironmentPhaseFailed indicates the environment creation failed
+	EnvironmentPhaseFailed EnvironmentPhase = "Failed"
+	// EnvironmentPhaseDeleting indicates the environment is being deleted
+	EnvironmentPhaseDeleting EnvironmentPhase = "Deleting"
 )
 
-// SubResourcePhase represents the lifecycle phase of a managed sub-resource (Namespace, RoleBinding)
-type SubResourcePhase string
-
-const (
-	// PhaseStatePending indicates the resource has not been processed yet.
-	PhaseStatePending SubResourcePhase = "Pending"
-	// PhaseStateCreating indicates the resource is being created.
-	PhaseStateCreating SubResourcePhase = "Creating"
-	// PhaseStateReady indicates the resource exists and is configured.
-	PhaseStateReady SubResourcePhase = "Ready"
-	// PhaseStateTerminating indicates the resource is being deleted.
-	PhaseStateTerminating SubResourcePhase = "Terminating"
-	// PhaseStateFailed indicates the resource encountered an error.
-	PhaseStateFailed SubResourcePhase = "Failed"
-	// PhaseStateUnmanaged indicates the resource exists but is not managed by the operator.
-	PhaseStateUnmanaged SubResourcePhase = "Unmanaged"
-	// PhaseStateDeleted indicates the resource has been deleted.
-	PhaseStateDeleted SubResourcePhase = "Deleted"
-)
+// ResourcePhase represents the lifecycle phase of a managed sub-resource
+type ResourcePhase struct {
+	Phase   string `json:"phase,omitempty"`
+	Message string `json:"message,omitempty"`
+}
 
 // EnvironmentStatus defines the observed state of Environment
 type EnvironmentStatus struct {
@@ -66,36 +59,34 @@ type EnvironmentStatus struct {
 	// +optional
 	Phase EnvironmentPhase `json:"phase,omitempty"`
 
-	// Namespace is the name of the managed Kubernetes namespace
+	// Message provides a human-readable explanation for the current status
 	// +optional
-	Namespace string `json:"namespace,omitempty"`
+	Message string `json:"message,omitempty"`
 
-	// ErrorMessage provides details on the last error encountered
+	// ObservedGeneration reflects the generation of the most recently observed Environment
 	// +optional
-	ErrorMessage string `json:"errorMessage,omitempty"`
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// NamespacePhase indicates the current state of the managed namespace.
+	// LastUpdated indicates when the status was last updated
 	// +optional
-	NamespacePhase string `json:"namespacePhase,omitempty"`
+	LastUpdated metav1.Time `json:"lastUpdated,omitempty"`
 
-	// RoleBindingPhase indicates the current state of the managed role binding.
+	// NamespacePhase indicates the current state of the managed namespace
 	// +optional
-	RoleBindingPhase string `json:"roleBindingPhase,omitempty"`
+	NamespacePhase *ResourcePhase `json:"namespacePhase,omitempty"`
 
-	// Conditions provide specific status details
+	// RoleBindingPhase indicates the current state of the managed role binding
 	// +optional
-	// +listType=map
-	// +listMapKey=type
-	Conditions []metav1.Condition `json:"conditions,omitempty"`
+	RoleBindingPhase *ResourcePhase `json:"roleBindingPhase,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Namespace",type="string",JSONPath=".status.namespace",description="The provisioned namespace"
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase",description="Current phase"
-// +kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status",description="Ready status"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 // +kubebuilder:resource:scope=Namespaced,singular=environment,shortName=env
+// +kubebuilder:validation:XValidation:rule="self.metadata.name == oldSelf.metadata.name",message="Environment name is immutable and cannot be changed after creation"
+// +kubebuilder:validation:XValidation:rule="self.spec.id == oldSelf.spec.id",message="Environment ID is immutable and cannot be changed after creation"
 // Environment represents a request to create and manage an isolated Kubernetes namespace
 type Environment struct {
 	metav1.TypeMeta   `json:",inline"`

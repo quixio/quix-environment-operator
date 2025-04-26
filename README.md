@@ -1,80 +1,110 @@
 # Quix Environment Operator
 
-A Kubernetes controller for secure, declarative provisioning of isolated application environments. Automates namespace creation, RBAC scoping, and policy enforcement via CRD.
+The Quix Environment Operator is a Kubernetes operator that manages Environment resources. It creates and maintains namespaces and role bindings for environments, ensuring proper isolation and permissions for users.
 
-**Note:** Open source for transparency, not for general use outside the Quix ecosystem.
+## Overview
+
+The operator watches for Environment custom resources and performs the following actions:
+
+1. Creates a dedicated namespace for each environment
+2. Sets up role bindings to grant users access to their environments
+3. Manages resource quotas and other configurations
+4. Handles cleanup when environments are deleted
 
 ## Features
 
-- Declarative environment definition via custom `Environment` resource
-- Automated namespace creation with strict naming conventions
-- Centralized ServiceAccounts with precise permissions
-- Audit-friendly event emission
-- Namespace-scoped actions with least-privilege security
+- **Environment Isolation**: Each environment gets its own Kubernetes namespace
+- **User Access Management**: Role-based access control for environment users
+- **Status Reporting**: Provides status updates for environments and their sub-resources
 
-## Audience
+## Prerequisites
 
-- Customers hosting Kubernetes clusters for Quix deployments
-- Security reviewers
-- Platform integration engineers
+- Kubernetes 1.19+
+- kubectl 1.19+
+- Go 1.19+ (for development)
 
-## Deployment
+## Installation
 
-Packaged as a Helm chart for customer-managed Kubernetes clusters. Operates within pre-approved RBAC constraints.
+### Using Kustomize
+
+```bash
+kubectl apply -k config/default
+```
+
+### Using Helm
+
+```bash
+helm repo add quix https://quix-analytics.github.io/charts
+helm install quix-environment-operator quix/environment-operator
+```
+
+## Usage
+
+### Creating an Environment
+
+```yaml
+apiVersion: quix.io/v1
+kind: Environment
+metadata:
+  name: demo-environment
+spec:
+  id: demo-env
+  annotations:
+    description: "Demo environment for testing"
+```
+
+### Checking Environment Status
+
+```bash
+kubectl get environments
+kubectl describe environment demo-environment
+```
 
 ## Development
 
-### Setup
+### Building
 
 ```bash
-git clone https://github.com/quix-analytics/quix-environment-operator.git
-cd quix-environment-operator
-make setup-dev
 make build
 ```
 
-### Testing
-
-You can run tests locally or in a Docker container:
+### Running Locally
 
 ```bash
-# Run tests locally
-make test            # All tests
-make test-unit       # Unit tests only
-make test-integration # Integration tests only
-
-# Run tests in Docker (consistent environment)
-make docker-test
+make run
 ```
 
-### Workflow
+### Running Tests
 
-1. `make setup-dev` - Install required tools
-2. `make build` - Build binary and generate files
-3. Make code changes
-4. `make test` - Verify changes
-5. Deploy via Helm for testing
+```bash
+make test
+```
 
-### Commands
+### Building Container Image
 
-- `make build` - Build operator binary
-- `make generate-all` - Generate code (DeepCopy methods and CRDs)
-- `make test` - Run all tests
-- `make test-unit` - Run unit tests
-- `make test-integration` - Run integration tests
-- `make docker-test` - Run all tests in a Docker container
-- `make docker-build` - Build Docker image
-- `make helm-install/uninstall` - Install/uninstall via Helm
-- `make kind-setup/delete` - Create/delete local kind cluster
-- `make tidy` - Tidy Go modules
+```bash
+make docker-build IMG=quix-environment-operator:latest
+```
+
+## Project Structure
+
+```
+├── api                 # API definitions (CRD)
+├── config              # Deployment configurations
+├── internal            # Internal packages
+│   ├── controller      # Reconciler implementations
+│   └── resources       # Resources management (namespace, rolebinding)
+└── main.go             # Entry point
+```
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/my-feature`)
+3. Commit your changes (`git commit -am 'Add my feature'`)
+4. Push to the branch (`git push origin feature/my-feature`)
+5. Create a new Pull Request
 
 ## License
 
-[Apache 2.0 License](./LICENSE)  
-See [NOTICE](./NOTICE) for trademark restrictions.
-
-## Trademark Notice
-
-"Quix" and the "Quix" logo are trademarks of Quix Analytics Ltd.  
-This project is maintained by Quix Analytics Ltd.  
-You may not use the "Quix" name or logo in derived projects without prior written permission.
+Copyright (c) Quix Analytics. All rights reserved. 

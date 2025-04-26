@@ -43,6 +43,9 @@ env:
   # Namespace suffix for provisioned environments (will be appended to environment name)
   namespaceSuffix: "-qdep"
   
+  # Environment ID validation regex
+  environmentRegex: ""
+  
   # ServiceAccount for RoleBindings
   serviceAccountName: "quix-environment-user"
   serviceAccountNamespace: "quix-system"

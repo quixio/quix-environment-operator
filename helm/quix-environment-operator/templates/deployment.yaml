@@ -34,6 +34,8 @@ spec:
           env:
             - name: NAMESPACE_SUFFIX
               value: {{ .Values.env.namespaceSuffix | quote }}
+            - name: ENVIRONMENT_REGEX
+              value: {{ .Values.env.environmentRegex | quote }}
             - name: SERVICE_ACCOUNT_NAME
               value: {{ .Values.env.serviceAccountName | quote }}
             - name: SERVICE_ACCOUNT_NAMESPACE
