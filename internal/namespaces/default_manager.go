@@ -11,6 +11,8 @@ import (
 	quixiov1 "github.com/quix-analytics/quix-environment-operator/api/v1"
 	"github.com/quix-analytics/quix-environment-operator/internal/status"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // DefaultNamespaceManager is the standard implementation of NamespaceManager
@@ -27,6 +29,66 @@ func NewDefaultNamespaceManager(client client.Client, recorder record.EventRecor
 		Recorder:      recorder,
 		StatusUpdater: statusUpdater,
 	}
+}
+
+// CreateNamespace creates a new namespace with proper metadata
+func (m *DefaultNamespaceManager) CreateNamespace(ctx context.Context, env *quixiov1.Environment, name string) error {
+	logger := log.FromContext(ctx).WithValues("namespace", name)
+	logger.Info("Attempting to create namespace")
+
+	namespace := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+		},
+	}
+
+	m.ApplyMetadata(env, namespace)
+
+	if err := m.Client.Create(ctx, namespace); err != nil {
+		if errors.IsAlreadyExists(err) {
+			logger.Info("Namespace already exists")
+
+			existingNs := &corev1.Namespace{}
+			if getErr := m.Client.Get(ctx, types.NamespacedName{Name: name}, existingNs); getErr != nil {
+				logger.V(3).Error(getErr, "Failed to get existing namespace after AlreadyExists error")
+				return getErr
+			}
+
+			if m.ApplyMetadata(env, existingNs) {
+				logger.Info("Updating metadata for existing namespace")
+				if updateErr := m.Client.Update(ctx, existingNs); updateErr != nil {
+					logger.V(3).Error(updateErr, "Failed to update existing namespace metadata")
+					return updateErr
+				}
+			}
+			return nil
+		}
+		logger.V(3).Error(err, "Failed to create namespace")
+		return err
+	}
+
+	logger.Info("Namespace created successfully")
+	m.Recorder.Eventf(env, corev1.EventTypeNormal, "NamespaceCreated", "Created namespace %s", name)
+	return nil
+}
+
+// GetNamespace retrieves a namespace by name
+func (m *DefaultNamespaceManager) GetNamespace(ctx context.Context, name string) (*corev1.Namespace, error) {
+	logger := log.FromContext(ctx)
+	namespace := &corev1.Namespace{}
+	err := m.Client.Get(ctx, types.NamespacedName{Name: name}, namespace)
+
+	if err != nil {
+		if errors.IsNotFound(err) {
+			logger.V(1).Info("Namespace not found", "namespaceName", name)
+			return nil, err
+		}
+		logger.V(3).Error(err, "Failed to get namespace", "namespaceName", name)
+		return nil, err
+	}
+
+	logger.V(2).Info("Found namespace", "namespaceName", name, "uid", namespace.UID)
+	return namespace, nil
 }
 
 // ApplyMetadata applies standard labels and annotations to a namespace

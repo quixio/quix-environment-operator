@@ -491,14 +491,15 @@ func TestCreateNamespace(t *testing.T) {
 
 			// Pass tt.setupClient as the configurer func
 			// Receive the built client, not the builder
-			reconciler, builtClient, nsManager, _, recorder := setupTestReconciler(t, tt.setupClient, tt.initialObjects)
+			_, builtClient, nsManager, _, recorder := setupTestReconciler(t, tt.setupClient, tt.initialObjects)
 			if tt.setupMocks != nil {
 				tt.setupMocks(nsManager)
 			}
 
-			namespaceName := fmt.Sprintf("%s%s", tt.environmentSpec.Id, reconciler.Config.NamespaceSuffix)
+			namespaceName := fmt.Sprintf("%s-qenv", tt.environmentSpec.Id)
 
-			err := reconciler.createNamespace(context.Background(), env, namespaceName)
+			// Test the namespace manager's CreateNamespace method directly
+			err := nsManager.CreateNamespace(context.Background(), env, namespaceName)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -1496,22 +1497,13 @@ func TestReconcile_NamespaceCreateError(t *testing.T) {
 		WithObjects(env).
 		Build()
 
-	// Create mock namespace manager
-	mockNsManager := &namespaces.MockNamespaceManager{
-		ApplyMetadataFunc: func(env *quixiov1.Environment, ns *corev1.Namespace) bool {
-			return true // Metadata would be applied during creation
-		},
-		IsNamespaceManagedFunc: func(ns *corev1.Namespace) bool {
-			return true // Would be managed if it existed
-		},
-		IsNamespaceDeletedFunc: func(ns *corev1.Namespace, err error) bool {
-			// When this is called in the test, we always want to return false
-			// so that the namespace is not considered deleted
-			return false
-		},
-	}
+	// Create status updater
+	statusUpdater := status.NewStatusUpdater(interceptedClient, recorder)
 
-	// Create mock status updater
+	// Create namespace manager directly using intercepted client
+	nsManager := namespaces.NewDefaultNamespaceManager(interceptedClient, recorder, statusUpdater)
+
+	// Create mock status updater for test assertions
 	mockStatusUpdater := &status.MockStatusUpdater{
 		SetErrorStatusFunc: func(ctx context.Context, env *quixiov1.Environment, phase quixiov1.EnvironmentPhase, err error, message string) error {
 			env.Status.Phase = phase
@@ -1539,35 +1531,24 @@ func TestReconcile_NamespaceCreateError(t *testing.T) {
 		},
 	}
 
-	// Create the reconciler
-	reconciler := &EnvironmentReconciler{
-		Client:           interceptedClient,
-		Scheme:           s,
-		Recorder:         recorder,
-		Config:           &config.OperatorConfig{NamespaceSuffix: "-qenv", ServiceAccountName: "test-sa", ServiceAccountNamespace: "test-ns", ClusterRoleName: "test-role"},
-		namespaceManager: mockNsManager,
-		statusUpdater:    mockStatusUpdater,
-	}
-
 	// --- TEST BEGINS ---
 
 	// Create a new reconcile request
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: envName, Namespace: envNamespace}}
 
-	// Get the environment to pass to createNamespace directly
+	// Get the environment to pass to CreateNamespace directly
 	testEnv := &quixiov1.Environment{}
 	getErr := interceptedClient.Get(ctx, req.NamespacedName, testEnv)
 	assert.NoError(t, getErr, "Should be able to get the environment")
 
-	// Call createNamespace directly instead of Reconcile
-	err := reconciler.createNamespace(ctx, testEnv, nsName)
+	// Call namespace manager's CreateNamespace method directly
+	err := nsManager.CreateNamespace(ctx, testEnv, nsName)
 
-	// Verify error from createNamespace
-	assert.Error(t, err, "createNamespace should return the creation error")
+	// Verify error from CreateNamespace
+	assert.Error(t, err, "CreateNamespace should return the creation error")
 	assert.Contains(t, err.Error(), "namespace creation failed", "Error should contain the specific error message")
 
-	// We need to manually call SetErrorStatus because we're directly calling createNamespace
-	// rather than going through the Reconcile method that handles error status updates
+	// We need to manually call SetErrorStatus to simulate what the controller would do
 	statusErr := mockStatusUpdater.SetErrorStatus(ctx, testEnv, quixiov1.PhaseCreateFailed,
 		err, fmt.Sprintf("Failed to create namespace %s", nsName))
 	assert.Error(t, statusErr, "SetErrorStatus should propagate the original error")

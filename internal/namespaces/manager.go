@@ -24,4 +24,12 @@ type NamespaceManager interface {
 
 	// IsNamespaceManaged checks if a namespace is managed by this operator based on labels
 	IsNamespaceManaged(namespace *corev1.Namespace) bool
+
+	// GetNamespace retrieves a namespace by name
+	// Returns the namespace and an error if it fails
+	GetNamespace(ctx context.Context, name string) (*corev1.Namespace, error)
+
+	// CreateNamespace creates a new namespace with proper metadata
+	// Returns an error if the creation fails
+	CreateNamespace(ctx context.Context, env *quixiov1.Environment, name string) error
 }

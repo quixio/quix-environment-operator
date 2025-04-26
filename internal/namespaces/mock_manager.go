@@ -16,6 +16,8 @@ type MockNamespaceManager struct {
 	UpdateMetadataFunc     func(ctx context.Context, env *quixiov1.Environment, namespace *corev1.Namespace) error
 	IsNamespaceDeletedFunc func(namespace *corev1.Namespace, err error) bool
 	IsNamespaceManagedFunc func(namespace *corev1.Namespace) bool
+	GetNamespaceFunc       func(ctx context.Context, name string) (*corev1.Namespace, error)
+	CreateNamespaceFunc    func(ctx context.Context, env *quixiov1.Environment, name string) error
 
 	// Embed default implementation for non-mocked methods
 	DefaultManager *DefaultNamespaceManager
@@ -26,6 +28,30 @@ func NewMockNamespaceManager(defaultManager *DefaultNamespaceManager) *MockNames
 	return &MockNamespaceManager{
 		DefaultManager: defaultManager,
 	}
+}
+
+// CreateNamespace uses the mock function if provided, or falls back to default behavior
+func (m *MockNamespaceManager) CreateNamespace(ctx context.Context, env *quixiov1.Environment, name string) error {
+	if m.CreateNamespaceFunc != nil {
+		return m.CreateNamespaceFunc(ctx, env, name)
+	}
+	if m.DefaultManager != nil {
+		return m.DefaultManager.CreateNamespace(ctx, env, name)
+	}
+	// Default implementation if no other behavior is specified
+	return nil
+}
+
+// GetNamespace uses the mock function if provided, or falls back to default behavior
+func (m *MockNamespaceManager) GetNamespace(ctx context.Context, name string) (*corev1.Namespace, error) {
+	if m.GetNamespaceFunc != nil {
+		return m.GetNamespaceFunc(ctx, name)
+	}
+	if m.DefaultManager != nil {
+		return m.DefaultManager.GetNamespace(ctx, name)
+	}
+	// Default implementation if no other behavior is specified
+	return nil, errors.NewNotFound(corev1.Resource("namespaces"), name)
 }
 
 // ApplyMetadata uses the mock function if provided, or falls back to default behavior
