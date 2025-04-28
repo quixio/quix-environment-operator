@@ -132,34 +132,42 @@ jobs:
           version: 'latest'
 
       - name: Push Helm chart to OCI registry
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKER_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           # Debug info
           echo "Attempting to push to Docker Hub OCI registry..."
           
-          # Create a temporary auth file
-          echo "${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}" | base64 > auth.txt
+          # Check if running in GitHub Actions or locally
+          if [ -n "$GITHUB_ACTIONS" ] && [ "$GITHUB_ACTIONS" = "true" ]; then
+            echo "Running in GitHub Actions environment"
+            if [ -n "$DOCKER_USERNAME" ] && [ -n "$DOCKER_TOKEN" ]; then
+              echo "Using GitHub secrets for authentication"
+              echo $DOCKER_TOKEN | helm registry login registry-1.docker.io --username $DOCKER_USERNAME --password-stdin
+            else
+              echo "Error: DockerHub secrets not found in GitHub environment."
+              echo "Please add DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets to your repository."
+              exit 1
+            fi
+          else
+            echo "Running in local environment"
+            echo "Please authenticate manually:"
+            helm registry login registry-1.docker.io
+          fi
           
-          # Show environment info (redacted secrets)
+          # Show environment info
           echo "Using chart path: ./deploy/quix-environment-operator-${{ needs.extract-versions.outputs.chart_version }}.tgz"
           echo "Using registry: ${{ env.HELM_REGISTRY }}"
-          echo "Username is set: ${{ secrets.DOCKERHUB_USERNAME != '' }}"
-          echo "Token is set: ${{ secrets.DOCKERHUB_TOKEN != '' }}"
-          
-          # Login using explicit command - avoid interactive prompts
-          echo "Logging in to Docker Hub..."
-          echo ${{ secrets.DOCKERHUB_TOKEN }} | docker login -u ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin
-          
-          # Alternative login approach for Helm
-          echo "Logging in to Helm registry..."
-          export HELM_REGISTRY_CONFIG=~/.config/helm/registry.json
-          mkdir -p $(dirname $HELM_REGISTRY_CONFIG)
-          echo '{"auths": {"registry-1.docker.io": {"auth": "'$(cat auth.txt)'"}}}' > $HELM_REGISTRY_CONFIG
           
           # Push with verbose output
           echo "Pushing Helm chart..."
-          helm push ./deploy/quix-environment-operator-${{ needs.extract-versions.outputs.chart_version }}.tgz ${{ env.HELM_REGISTRY }} --debug
-          
-          # Clean up
-          rm -f auth.txt
+          if [ -z "$GITHUB_ACTIONS" ] || [ "$GITHUB_ACTIONS" != "true" ]; then
+            # Local execution - use local chart path
+            helm push ./deploy/quix-environment-operator-*.tgz ${{ env.HELM_REGISTRY }} --debug
+          else
+            # GitHub Actions execution - use exact version path
+            helm push ./deploy/quix-environment-operator-${{ needs.extract-versions.outputs.chart_version }}.tgz ${{ env.HELM_REGISTRY }} --debug
+          fi
           
           echo "Helm chart pushed successfully" 
