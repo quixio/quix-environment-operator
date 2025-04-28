@@ -38,7 +38,7 @@ help: ## Display this help.
 ##@ Development
 
 .PHONY: manifests
-manifests: controller-gen ## Generate CRDs and RBAC manifests
+manifests: ## Generate CRDs and RBAC manifests
 	@echo "Cleaning CRD directory..."
 	@mkdir -p config/crd/bases
 	@rm -f config/crd/bases/*.yaml
@@ -47,7 +47,7 @@ manifests: controller-gen ## Generate CRDs and RBAC manifests
 	@echo "CRD generation complete."
 
 .PHONY: generate
-generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
+generate: ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 	@echo "Generating DeepCopy code..."
 	$(LOCALBIN)/controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./api/..."
 	@echo "DeepCopy code generation complete."
@@ -109,7 +109,7 @@ docker-test-integration: ## Run only integration tests in Docker container.
 ##@ Build
 
 .PHONY: generate-crds
-generate-crds: controller-gen ## Generate CRD files
+generate-crds: ## Generate CRD files
 	@echo "Regenerating CRD files..."
 	@mkdir -p config/crd/bases
 	@rm -f config/crd/bases/*.yaml
@@ -123,8 +123,8 @@ generate-crds: controller-gen ## Generate CRD files
 .PHONY: helm-copy-crds
 helm-copy-crds: generate-crds ## Copy CRDs to Helm chart templates directory
 	@echo "Copying CRDs to Helm chart templates directory..."
-	@mkdir -p helm/quix-environment-operator/templates
-	cp config/crd/bases/quix.io_environments.yaml deploy/quix-environment-operator/templates/crds.yaml
+	@mkdir -p deploy/quix-environment-operator/templates
+	@cp config/crd/bases/quix.io_environments.yaml deploy/quix-environment-operator/templates/crds.yaml
 	@echo "CRDs copied successfully"
 
 .PHONY: build
@@ -202,12 +202,13 @@ undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/confi
 .PHONY: helm-package
 helm-package: ## Package the Helm chart.
 	@echo "Packaging Helm chart..."
-	helm package ./deploy/quix-environment-operator -d ./helm
+	@mkdir -p helm/quix-environment-operator/charts
+	@helm package ./deploy/quix-environment-operator -d ./helm
 
 .PHONY: helm-lint
 helm-lint: ## Validate the Helm chart.
 	@echo "Linting Helm chart..."
-	helm lint ./deploy/quix-environment-operator
+	@helm lint ./deploy/quix-environment-operator
 
 ##@ Build Dependencies
 
@@ -218,18 +219,6 @@ $(LOCALBIN):
 
 ## Tool Binaries
 ENVTEST ?= $(LOCALBIN)/setup-envtest
-
-## Tool Versions
-CONTROLLER_TOOLS_VERSION ?= v0.14.0
-GOIMPORTS_TOOLS_VERSION ?= v0.32.0
-
-.PHONY: controller-gen
-controller-gen:  ## Download controller-gen locally if necessary.
-	test -s $(LOCALBIN)/controller-gen || GOARCH=$(go env GOARCH) GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION)
-
-.PHONY: envtest
-envtest: ## Download envtest-setup locally if necessary.
-	test -s $(LOCALBIN)/setup-envtest || GOARCH=$(go env GOARCH) GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
 
 ##@ Development Environment
 
@@ -250,12 +239,6 @@ setup-dev: ## Set up the complete development environment.
 	@echo "Setting up development environment..."
 	@chmod +x hack/setup-dev-env.sh
 	@hack/setup-dev-env.sh
-
-.PHONY: dev-deps
-dev-deps: ## Install development dependencies.
-	go get -d k8s.io/code-generator
-	GOARCH=$(go env GOARCH) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
-	GOARCH=$(go env GOARCH) go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.14.0
 
 .PHONY: tidy
 tidy: fmt ## Run go mod tidy and clean up imports.

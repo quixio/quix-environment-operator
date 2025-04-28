@@ -22,28 +22,22 @@ RUN mkdir -p ${KUBEBUILDER_ASSETS} && \
 # Set working dir 
 WORKDIR /app
 
-# Copy module files individually
 COPY go.mod ./
+COPY hack/ ./hack/
+COPY Makefile ./
+
+RUN make setup-dev
+
+# Copy the rest of the code
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
+COPY api/ ./api/
+COPY config/ ./config/
 
 # Download dependencies and generate go.sum
 RUN go mod download
 RUN go mod tidy
 
-# Copy the rest of the code
-COPY . .    
-
-# delete ./bin if present
-RUN if [ -d "./bin" ]; then rm -rf ./bin; fi
-
-# Set proper architecture for the build
-RUN export GOARCH=$(uname -m) && \   
-    case "$GOARCH" in \
-        x86_64) export GOARCH=amd64 ;; \
-        aarch64) export GOARCH=arm64 ;; \
-        *) echo "Unsupported architecture: $GOARCH" && exit 1 ;; \
-    esac && \
-    mkdir -p bin && \
-    echo "Building with GOARCH=$GOARCH" && \
-    make build
+RUN make build
 
 ENTRYPOINT ["go", "test", "./...", "-v", "-tags=integration", "-coverprofile=cover.out"] 

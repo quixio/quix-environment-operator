@@ -94,8 +94,7 @@ func (m *DefaultManager) create(ctx context.Context, env *v1.Environment) (*core
 
 			// Check if the namespace is managed by us before making changes
 			if !m.IsManaged(env) {
-				errMsg := fmt.Sprintf("Cannot use existing namespace %s: not managed by this operator", namespaceName)
-				return nil, fmt.Errorf(errMsg)
+				return nil, fmt.Errorf("cannot use existing namespace %s: not managed by this operator", namespaceName)
 			}
 
 			if m.ApplyMetadata(env, existingNs) {
@@ -127,8 +126,7 @@ func (m *DefaultManager) update(ctx context.Context, env *v1.Environment) error 
 
 	// Check if the namespace is managed by us before making changes
 	if !m.IsManaged(env) {
-		errMsg := fmt.Sprintf("Cannot update namespace %s: not managed by this operator", namespaceName)
-		return fmt.Errorf(errMsg)
+		return fmt.Errorf("cannot update namespace %s: not managed by this operator", namespaceName)
 	}
 
 	if m.ApplyMetadata(env, namespace) {
