@@ -1,110 +1,72 @@
 # Quix Environment Operator
 
-The Quix Environment Operator is a Kubernetes operator that manages Environment resources. It creates and maintains namespaces and role bindings for environments, ensuring proper isolation and permissions for users.
+A Kubernetes controller for secure, declarative provisioning of isolated application environments. Automates namespace creation, RBAC scoping, and policy enforcement via CRD.
 
-## Overview
-
-The operator watches for Environment custom resources and performs the following actions:
-
-1. Creates a dedicated namespace for each environment
-2. Sets up role bindings to grant users access to their environments
-3. Manages resource quotas and other configurations
-4. Handles cleanup when environments are deleted
+**Note:** Open source for transparency, not for general use outside the Quix ecosystem.
 
 ## Features
 
-- **Environment Isolation**: Each environment gets its own Kubernetes namespace
-- **User Access Management**: Role-based access control for environment users
-- **Status Reporting**: Provides status updates for environments and their sub-resources
+- Declarative environment definition via custom `Environment` resource
+- Automated namespace creation with strict naming conventions
+- Centralized ServiceAccounts with precise permissions
+- Audit-friendly event emission
+- Namespace-scoped actions with least-privilege security
+- More in [Design docs](/docs/CONTROLLER_DESIGN.md)
 
-## Prerequisites
+## Audience
 
-- Kubernetes 1.19+
-- kubectl 1.19+
-- Go 1.19+ (for development)
+- Customers hosting Kubernetes clusters for Quix deployments
+- Security reviewers
+- Platform integration engineers
 
-## Installation
+## Deployment
 
-### Using Kustomize
-
-```bash
-kubectl apply -k config/default
-```
-
-### Using Helm
-
-```bash
-helm repo add quix https://quix-analytics.github.io/charts
-helm install quix-environment-operator quix/environment-operator
-```
-
-## Usage
-
-### Creating an Environment
-
-```yaml
-apiVersion: quix.io/v1
-kind: Environment
-metadata:
-  name: demo-environment
-spec:
-  id: demo-env
-  annotations:
-    description: "Demo environment for testing"
-```
-
-### Checking Environment Status
-
-```bash
-kubectl get environments
-kubectl describe environment demo-environment
-```
+Packaged as a Helm chart for customer-managed Kubernetes clusters. Operates within pre-approved RBAC constraints.
 
 ## Development
 
-### Building
+### Setup
 
 ```bash
+git clone https://github.com/quix-analytics/quix-environment-operator.git
+cd quix-environment-operator
+make setup-dev
 make build
 ```
 
-### Running Locally
+### Testing
+
+You can run tests locally or in a Docker container:
 
 ```bash
-make run
+# Run tests locally
+make test            # All tests
+
+# Run tests in Docker (consistent environment)
+make docker-test
 ```
 
-### Running Tests
+### Workflow
 
-```bash
-make test
-```
-
-### Building Container Image
-
-```bash
-make docker-build IMG=quix-environment-operator:latest
-```
-
-## Project Structure
-
-```
-├── api                 # API definitions (CRD)
-├── config              # Deployment configurations
-├── internal            # Internal packages
-│   ├── controller      # Reconciler implementations
-│   └── resources       # Resources management (namespace, rolebinding)
-└── main.go             # Entry point
-```
+1. `make setup-dev` - Install required tools
+2. `make build` - Build binary and generate files
+3. Make code changes
+4. `make test` - Verify changes
+5. `make help` for the rest
+6. GitHub build actions are explained [here](.github/GHACTION_README.md)
 
 ## Contributing
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/my-feature`)
-3. Commit your changes (`git commit -am 'Add my feature'`)
-4. Push to the branch (`git push origin feature/my-feature`)
-5. Create a new Pull Request
+Please see [CONTRIBUTING.md](CONTRIBUTING.md) for details on how to contribute to this project. All external contributions must be submitted through forks.
 
 ## License
 
-Copyright (c) Quix Analytics. All rights reserved. 
+[Apache 2.0 License](./LICENSE)  
+
+Remember that "Quix" and the "Quix" logo are trademarks of Quix Analytics Ltd. Your contributions must respect the trademark restrictions outlined in the [NOTICE](./NOTICE) file. 
+
+## Trademark Notice
+
+"Quix" and the "Quix" logo are trademarks of Quix Analytics Ltd.  
+This project is maintained by Quix Analytics Ltd.  
+You may not use the "Quix" name or logo in derived projects without prior written permission.
