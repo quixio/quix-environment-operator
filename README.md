@@ -2,7 +2,7 @@
 
 A Kubernetes controller for secure, declarative provisioning of isolated application environments. Automates namespace creation, RBAC scoping, and policy enforcement via CRD.
 
-**Note:** Open source for transparency, not for general use outside the Quix ecosystem.
+**Note:** This project is open source and can be used by anyone, but it is primarily designed for use within the Quix ecosystem.
 
 ## Features
 
