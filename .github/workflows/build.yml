@@ -13,28 +13,15 @@ env:
   HELM_REGISTRY: oci://registry-1.docker.io/quixanalytics
 
 jobs:
-  test-and-build:
+  extract-versions:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-
+    outputs:
+      app_version: ${{ steps.original_versions.outputs.APP_VERSION }}
+      chart_version: ${{ steps.original_versions.outputs.CHART_VERSION }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      # - name: Run tests
-      #   run: |
-      #     make docker-test
-        
-      - name: Set up Helm
-        uses: azure/setup-helm@v3
-        with:
-          version: 'latest'
-          
       - name: Extract original versions
         id: original_versions
         run: |
@@ -61,39 +48,91 @@ jobs:
           echo "Modified Chart.yaml:"
           cat helm/quix-environment-operator/Chart.yaml
 
-      - name: Log in to Docker Hub
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+  build-docker:
+    needs: extract-versions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Build and push Docker image
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
         run: |
-          # Set IMG env var for make commands
-          export IMG="${REGISTRY}/${IMAGE_NAME}:${APP_VERSION}"
-          
-          # Build docker image
+          export IMG="${REGISTRY}/${IMAGE_NAME}:${{ needs.extract-versions.outputs.app_version }}"
           make docker-build
-          
-          # Push image if not a PR
-          if [ "${{ github.event_name }}" != "pull_request" ]; then
-            make docker-push
-            
-            # Add and push latest tag for main branch
-            if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-              docker tag ${IMG} ${REGISTRY}/${IMAGE_NAME}:latest
-              docker push ${REGISTRY}/${IMAGE_NAME}:latest
-            fi
-          fi
+          echo "Docker image built successfully"
+
+  build-helm:
+    needs: extract-versions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: 'latest'
 
       - name: Package and lint Helm chart
         run: |
           make helm-lint
           make helm-package
+          echo "Helm chart packaged successfully"
+
+  push-docker:
+    needs: [extract-versions, build-docker]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push Docker image
+        run: |
+          export IMG="${REGISTRY}/${IMAGE_NAME}:${{ needs.extract-versions.outputs.app_version }}"
+          make docker-push
+          
+          # Add and push latest tag for main branch
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            docker tag ${IMG} ${REGISTRY}/${IMAGE_NAME}:latest
+            docker push ${REGISTRY}/${IMAGE_NAME}:latest
+          fi
+          echo "Docker image pushed successfully"
+
+  push-helm:
+    needs: [extract-versions, build-helm]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: 'latest'
 
       - name: Push Helm chart to OCI registry
-        if: github.event_name != 'pull_request'
         run: |
           echo "${{ secrets.DOCKERHUB_TOKEN }}" | helm registry login -u ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin registry-1.docker.io
-          helm push ./deploy/quix-environment-operator-${{ env.CHART_VERSION }}.tgz ${{ env.HELM_REGISTRY }} 
+          helm push ./deploy/quix-environment-operator-${{ needs.extract-versions.outputs.chart_version }}.tgz ${{ env.HELM_REGISTRY }}
+          echo "Helm chart pushed successfully" 
