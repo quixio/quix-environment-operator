@@ -1,7 +1,7 @@
 # Image URL to use all building/pushing image targets
 IMG ?= quix-environment-operator:latest
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
-ENVTEST_K8S_VERSION = 1.26.0
+ENVTEST_K8S_VERSION = 1.28.0
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -14,6 +14,15 @@ endif
 # Options are set to exit when a recipe line exits non-zero or a piped command fails.
 SHELL = /usr/bin/env bash -o pipefail
 .SHELLFLAGS = -ec
+
+
+## Location to install dependencies to
+LOCALBIN ?= $(shell pwd)/bin
+$(LOCALBIN):
+	mkdir -p $(LOCALBIN)
+
+## Tool Binaries
+ENVTEST ?= $(LOCALBIN)/setup-envtest
 
 .PHONY: all
 all: build
@@ -50,6 +59,8 @@ manifests: ## Generate CRDs and RBAC manifests
 generate: ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 	@echo "Generating DeepCopy code..."
 	$(LOCALBIN)/controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./api/..."
+	@echo "Generated files:"
+#	@ls -ls ./api | grep "zz_"
 	@echo "DeepCopy code generation complete."
 
 .PHONY: fmt
@@ -61,18 +72,18 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 .PHONY: test
-test: manifests generate fmt vet envtest ## Run tests.
+test: manifests generate fmt vet ## Run tests.
 	$(eval export KUBEBUILDER_ASSETS=$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path))
 	@echo "Using KUBEBUILDER_ASSETS: $(KUBEBUILDER_ASSETS)"
 	make test-unit test-integration
 
 .PHONY: test-unit
-test-unit: envtest ## Run unit tests.
+test-unit: ## Run unit tests.
 	$(eval export KUBEBUILDER_ASSETS=$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path))
 	go test ./... -v -coverprofile=cover.out
 
 .PHONY: test-integration
-test-integration: envtest manifests ## Run integration tests.
+test-integration: manifests ## Run integration tests.
 	$(eval export KUBEBUILDER_ASSETS=$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path))
 	go test ./... -v -coverprofile=cover-integration.out -tags=integration
 
@@ -210,16 +221,6 @@ helm-lint: ## Validate the Helm chart.
 	@echo "Linting Helm chart..."
 	@helm lint ./deploy/quix-environment-operator
 
-##@ Build Dependencies
-
-## Location to install dependencies to
-LOCALBIN ?= $(shell pwd)/bin
-$(LOCALBIN):
-	mkdir -p $(LOCALBIN)
-
-## Tool Binaries
-ENVTEST ?= $(LOCALBIN)/setup-envtest
-
 ##@ Development Environment
 
 .PHONY: kind-setup
@@ -242,7 +243,6 @@ setup-dev: ## Set up the complete development environment.
 
 .PHONY: tidy
 tidy: fmt ## Run go mod tidy and clean up imports.
-	test -s $(LOCALBIN)/goimports || GOARCH=$(go env GOARCH) GOBIN=$(LOCALBIN) go install golang.org/x/tools/cmd/goimports@$(GOIMPORTS_TOOLS_VERSION)
 	@echo "Cleaning up imports in Go files..."
 	@find . -type f -name "*.go" -not -path "./vendor/*" | xargs $(LOCALBIN)/goimports -w
 	@echo "Running go mod tidy..."

@@ -41,6 +41,7 @@ if [[ ":$PATH:" != *":$HOME/go/bin:"* ]]; then
     echo "Added $HOME/go/bin to PATH"
 fi
 
+test -s $LOCALBIN/goimports || GOARCH=$(go env GOARCH) GOBIN=$LOCALBIN go install sigs.k8s.io/controller-tools/cmd/controller-gen@$CONTROLLER_TOOLS_VERSION
 test -s $LOCALBIN/controller-gen || GOARCH=$(go env GOARCH) GOBIN=$LOCALBIN go install sigs.k8s.io/controller-tools/cmd/controller-gen@$CONTROLLER_TOOLS_VERSION
 test -s $LOCALBIN/setup-envtest || GOARCH=$(go env GOARCH) GOBIN=$LOCALBIN go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
 test -s $LOCALBIN/code-generator || GOARCH=$(go env GOARCH) GOBIN=$LOCALBIN go get -d k8s.io/code-generator
@@ -50,7 +51,7 @@ echo "Downloading kubebuilder assets for testing..."
 $LOCALBIN/setup-envtest use -p path 1.28.0 >/dev/null
  
 # Get the path to kubebuilder assets
-KUBEBUILDER_ASSETS=$(GOBIN=$LOCALBIN $LOCALBIN/setup-envtest use -p path 1.28.0)
+KUBEBUILDER_ASSETS=$($LOCALBIN/setup-envtest use -p path 1.28.0)
 
 # Print configuration instructions
 echo ""

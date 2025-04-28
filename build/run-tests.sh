@@ -10,7 +10,7 @@ if [ ! -f "go.sum" ]; then
 fi
 # Build the test Docker image
 echo "Building test Docker image..."
-docker build -t quix-environment-operator-test -f build/dockerfile.test .
+docker build -t quix-environment-operator-test -f build/dockerfile.test . --progress=plain
 
 # Function to run tests with specified tags and options
 run_tests() {
