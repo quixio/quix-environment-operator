@@ -83,8 +83,8 @@ docker-test: ## Run all tests in Docker container.
 		echo "Error: Docker is required but not found. Please install Docker first."; \
 		exit 1; \
 	fi
-	@chmod +x run-tests.sh
-	./run-tests.sh all
+	@chmod +x build/run-tests.sh
+	./build/run-tests.sh all
 
 .PHONY: docker-test-unit
 docker-test-unit: ## Run only unit tests in Docker container.
@@ -93,8 +93,8 @@ docker-test-unit: ## Run only unit tests in Docker container.
 		echo "Error: Docker is required but not found. Please install Docker first."; \
 		exit 1; \
 	fi
-	@chmod +x run-tests.sh
-	./run-tests.sh unit
+	@chmod +x build/run-tests.sh
+	./build/run-tests.sh unit
 
 .PHONY: docker-test-integration
 docker-test-integration: ## Run only integration tests in Docker container.
@@ -103,8 +103,8 @@ docker-test-integration: ## Run only integration tests in Docker container.
 		echo "Error: Docker is required but not found. Please install Docker first."; \
 		exit 1; \
 	fi
-	@chmod +x run-tests.sh
-	./run-tests.sh integration
+	@chmod +x build/run-tests.sh
+	./build/run-tests.sh integration
 
 ##@ Build
 
@@ -124,19 +124,19 @@ generate-crds: controller-gen ## Generate CRD files
 helm-copy-crds: generate-crds ## Copy CRDs to Helm chart templates directory
 	@echo "Copying CRDs to Helm chart templates directory..."
 	@mkdir -p helm/quix-environment-operator/templates
-	cp config/crd/bases/quix.io_environments.yaml helm/quix-environment-operator/templates/crds.yaml
+	cp config/crd/bases/quix.io_environments.yaml deploy/quix-environment-operator/templates/crds.yaml
 	@echo "CRDs copied successfully"
 
 .PHONY: build
 build: generate-crds generate fmt vet helm-copy-crds ## Build manager binary.
-	go build -o bin/operator cmd/main.go
+	go build -o bin/operator cmd/operator/main.go
 
 # If you wish built the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64 ). However, you must enable docker buildKit for it.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.
-	docker build -t ${IMG} .
+	docker build -t ${IMG} . -f build/dockerfile
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
@@ -182,7 +182,7 @@ deploy: manifests ## Deploy controller to the K8s cluster specified in ~/.kube/c
 			exit 1; \
 		fi; \
 	fi
-	helm upgrade --install quix-environment-operator ./helm/quix-environment-operator \
+	helm upgrade --install quix-environment-operator ./deploy/quix-environment-operator \
 		--create-namespace --namespace quix-environment \
 		--set image.repository=$(shell echo ${IMG} | cut -d: -f1) \
 		--set image.tag=$(shell echo ${IMG} | cut -d: -f2)
@@ -202,12 +202,12 @@ undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/confi
 .PHONY: helm-package
 helm-package: ## Package the Helm chart.
 	@echo "Packaging Helm chart..."
-	helm package ./helm/quix-environment-operator -d ./helm
+	helm package ./deploy/quix-environment-operator -d ./helm
 
 .PHONY: helm-lint
 helm-lint: ## Validate the Helm chart.
 	@echo "Linting Helm chart..."
-	helm lint ./helm/quix-environment-operator
+	helm lint ./deploy/quix-environment-operator
 
 ##@ Build Dependencies
 

@@ -46,4 +46,4 @@ RUN export GOARCH=$(uname -m) && \
     echo "Building with GOARCH=$GOARCH" && \
     make build
 
-ENTRYPOINT ["go", "test", "./...", "-v", "-coverprofile=cover.out"]
+ENTRYPOINT ["go", "test", "./...", "-v", "-tags=integration", "-coverprofile=cover.out"] 

@@ -96,4 +96,4 @@ jobs:
         if: github.event_name != 'pull_request'
         run: |
           echo "${{ secrets.DOCKERHUB_TOKEN }}" | helm registry login -u ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin registry-1.docker.io
-          helm push ./helm/quix-environment-operator-${{ env.CHART_VERSION }}.tgz ${{ env.HELM_REGISTRY }} 
+          helm push ./deploy/quix-environment-operator-${{ env.CHART_VERSION }}.tgz ${{ env.HELM_REGISTRY }} 
