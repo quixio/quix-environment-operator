@@ -2,6 +2,9 @@
 /bin/
 /out/
 
+# Test
+/coverlet/
+
 # Go build artifacts
 *.exe
 *.out

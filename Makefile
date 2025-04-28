@@ -80,12 +80,14 @@ test: manifests generate fmt vet ## Run tests.
 .PHONY: test-unit
 test-unit: ## Run unit tests.
 	$(eval export KUBEBUILDER_ASSETS=$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path))
-	go test ./... -v -coverprofile=cover.out
+	mkdir -p ./coverlet
+	go test ./... -v -coverprofile=./coverlet/cover-unit.out
 
 .PHONY: test-integration
 test-integration: manifests ## Run integration tests.
 	$(eval export KUBEBUILDER_ASSETS=$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path))
-	go test ./... -v -coverprofile=cover-integration.out -tags=integration
+	mkdir -p ./coverlet
+	go test ./... -v -coverprofile=./coverlet/cover-integration.out -tags=integration
 
 .PHONY: docker-test
 docker-test: ## Run all tests in Docker container.
@@ -240,6 +242,7 @@ setup-dev: ## Set up the complete development environment.
 	@echo "Setting up development environment..."
 	@chmod +x hack/setup-dev-env.sh
 	@hack/setup-dev-env.sh
+
 
 .PHONY: tidy
 tidy: fmt ## Run go mod tidy and clean up imports.
