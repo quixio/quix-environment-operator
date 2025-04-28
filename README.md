@@ -63,8 +63,6 @@ Please see [CONTRIBUTING.md](CONTRIBUTING.md) for details on how to contribute t
 
 [Apache 2.0 License](./LICENSE)  
 
-Remember that "Quix" and the "Quix" logo are trademarks of Quix Analytics Ltd. Your contributions must respect the trademark restrictions outlined in the [NOTICE](./NOTICE) file. 
-
 ## Trademark Notice
 
 "Quix" and the "Quix" logo are trademarks of Quix Analytics Ltd.  
