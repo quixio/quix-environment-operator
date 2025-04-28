@@ -134,17 +134,32 @@ jobs:
       - name: Push Helm chart to OCI registry
         run: |
           # Debug info
-          echo "Attempting to login to registry-1.docker.io..."
-
-          helm registry login registry-1.docker.io \
-            --username ${{ secrets.DOCKERHUB_USERNAME }} \
-            --password ${{ secrets.DOCKERHUB_TOKEN }}
+          echo "Attempting to push to Docker Hub OCI registry..."
           
-          echo "Login successful, attempting to push chart..."
+          # Create a temporary auth file
+          echo "${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}" | base64 > auth.txt
+          
+          # Show environment info (redacted secrets)
           echo "Using chart path: ./deploy/quix-environment-operator-${{ needs.extract-versions.outputs.chart_version }}.tgz"
           echo "Using registry: ${{ env.HELM_REGISTRY }}"
+          echo "Username is set: ${{ secrets.DOCKERHUB_USERNAME != '' }}"
+          echo "Token is set: ${{ secrets.DOCKERHUB_TOKEN != '' }}"
+          
+          # Login using explicit command - avoid interactive prompts
+          echo "Logging in to Docker Hub..."
+          echo ${{ secrets.DOCKERHUB_TOKEN }} | docker login -u ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin
+          
+          # Alternative login approach for Helm
+          echo "Logging in to Helm registry..."
+          export HELM_REGISTRY_CONFIG=~/.config/helm/registry.json
+          mkdir -p $(dirname $HELM_REGISTRY_CONFIG)
+          echo '{"auths": {"registry-1.docker.io": {"auth": "'$(cat auth.txt)'"}}}' > $HELM_REGISTRY_CONFIG
           
           # Push with verbose output
+          echo "Pushing Helm chart..."
           helm push ./deploy/quix-environment-operator-${{ needs.extract-versions.outputs.chart_version }}.tgz ${{ env.HELM_REGISTRY }} --debug
+          
+          # Clean up
+          rm -f auth.txt
           
           echo "Helm chart pushed successfully" 
