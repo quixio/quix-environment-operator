@@ -1,11 +1,12 @@
 # Binaries
 /bin/
-/build/
 /out/
+
+# Test
+/coverlet/
 
 # Go build artifacts
 *.exe
-*.test
 *.out
 *.prof
 *.coverprofile
@@ -42,4 +43,5 @@ testbin/
 
 # Generated files
 /config/crd/bases/
+/deploy/quix-environment-operator/templates/crds.yaml
 zz_generated.*.go

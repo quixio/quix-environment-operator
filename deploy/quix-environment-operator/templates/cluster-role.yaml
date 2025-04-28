@@ -1,10 +1,9 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: quix-environment-operator
+  name: {{ include "quix-environment-operator.fullname" . }}
   labels:
-    app.kubernetes.io/name: quix-environment-operator
-    app.kubernetes.io/part-of: quix-environment-operator
+    {{- include "quix-environment-operator.labels" . | nindent 4 }}
 rules:
 # Allows the controller to manage the custom environment resources
 - apiGroups: ["quix.io"]

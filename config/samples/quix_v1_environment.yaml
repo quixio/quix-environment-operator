@@ -1,12 +1,12 @@
 apiVersion: quix.io/v1
 kind: Environment
 metadata:
-  name: test-env
+  name: sample-environment
 spec:
-  id: test
-  labels:
-    environment-type: development
-    team: engineering
+  # Required: Unique identifier for the environment
+  id: sample-env
+  
+  # Optional: Custom annotations to add to the namespace
   annotations:
-    description: "Test environment for engineering team"
-    owner: "devs@quix.io" 
+    quix.io/description: "Sample environment for demonstration"
+    quix.io/team: "platform-team" 

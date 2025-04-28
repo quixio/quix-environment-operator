@@ -1,113 +1,252 @@
+# Image URL to use all building/pushing image targets
+IMG ?= quix-environment-operator:latest
+# ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
+ENVTEST_K8S_VERSION = 1.28.0
+
+# Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
+ifeq (,$(shell go env GOBIN))
+GOBIN=$(shell go env GOPATH)/bin
+else
+GOBIN=$(shell go env GOBIN)
+endif
+
+# Setting SHELL to bash allows bash commands to be executed by recipes.
+# Options are set to exit when a recipe line exits non-zero or a piped command fails.
+SHELL = /usr/bin/env bash -o pipefail
+.SHELLFLAGS = -ec
+
+
+## Location to install dependencies to
+LOCALBIN ?= $(shell pwd)/bin
+$(LOCALBIN):
+	mkdir -p $(LOCALBIN)
+
+## Tool Binaries
+ENVTEST ?= $(LOCALBIN)/setup-envtest
+
+.PHONY: all
 all: build
 
-# Build the operator binary, ensuring generated code is up-to-date
-build: generate-all
-	go build -o bin/operator main.go
+##@ General
 
-# Build a docker image for the operator
-docker-build:
-	@echo "Building Docker image..."
-	docker build -t quix-environment-operator:latest .
+# The help target prints out all targets with their descriptions organized
+# beneath their categories. The categories are represented by '##@' and the
+# target descriptions by '##'. The awk commands is responsible for reading the
+# entire set of makefiles included in this invocation, looking for lines of the
+# file as xyz: ## something, and then pretty-format the target and help. Then,
+# if there's a line with ##@ something, that gets pretty-printed as a category.
+# More info on the usage of ANSI control characters for terminal formatting:
+# https://en.wikipedia.org/wiki/ANSI_escape_code#SGR_parameters
+# More info on the awk command:
+# http://linuxcommand.org/lc3_adv_awk.php
 
-# Push the docker image to a registry - must specify REGISTRY env var
-docker-push:
-	@echo "Pushing Docker image to registry..."
-	@[ "${REGISTRY}" ] || (echo "Error: REGISTRY environment variable not set"; exit 1)
-	docker tag quix-environment-operator:latest ${REGISTRY}/quix-environment-operator:latest
-	docker push ${REGISTRY}/quix-environment-operator:latest
+.PHONY: help
+help: ## Display this help.
+	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n"} /^[a-zA-Z_0-9-]+:.*?##/ { printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
 
-# Install the operator via Helm
-helm-install: generate-crds
-	@echo "Installing operator via Helm..."
-	helm upgrade --install quix-environment-operator ./helm/quix-environment-operator \
-		--create-namespace --namespace quix-environment
+##@ Development
 
-# Uninstall the operator via Helm
-helm-uninstall:
-	@echo "Uninstalling operator via Helm..."
+.PHONY: manifests
+manifests: ## Generate CRDs and RBAC manifests
+	@echo "Cleaning CRD directory..."
+	@mkdir -p config/crd/bases
+	@rm -f config/crd/bases/*.yaml
+	@echo "Generating CRDs using controller-gen..."
+	$(LOCALBIN)/controller-gen crd:crdVersions=v1 rbac:roleName=manager-role paths="./api/..." output:crd:artifacts:config=config/crd/bases
+	@echo "CRD generation complete."
+
+.PHONY: generate
+generate: ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
+	@echo "Generating DeepCopy code..."
+	$(LOCALBIN)/controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./api/..."
+	@echo "Generated files:"
+#	@ls -ls ./api | grep "zz_"
+	@echo "DeepCopy code generation complete."
+
+.PHONY: fmt
+fmt: ## Run go fmt against code.
+	go fmt ./...
+
+.PHONY: vet
+vet: ## Run go vet against code.
+	go vet ./...
+
+.PHONY: test
+test: manifests generate fmt vet ## Run tests.
+	$(eval export KUBEBUILDER_ASSETS=$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path))
+	@echo "Using KUBEBUILDER_ASSETS: $(KUBEBUILDER_ASSETS)"
+	make test-unit test-integration
+
+.PHONY: test-unit
+test-unit: ## Run unit tests.
+	$(eval export KUBEBUILDER_ASSETS=$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path))
+	mkdir -p ./coverlet
+	go test ./... -v -coverprofile=./coverlet/cover-unit.out
+
+.PHONY: test-integration
+test-integration: manifests ## Run integration tests.
+	$(eval export KUBEBUILDER_ASSETS=$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path))
+	mkdir -p ./coverlet
+	go test ./... -v -coverprofile=./coverlet/cover-integration.out -tags=integration
+
+.PHONY: docker-test
+docker-test: ## Run all tests in Docker container.
+	@echo "Running all tests in Docker container..."
+	@if ! command -v docker &> /dev/null; then \
+		echo "Error: Docker is required but not found. Please install Docker first."; \
+		exit 1; \
+	fi
+	@chmod +x build/run-tests.sh
+	./build/run-tests.sh all
+
+.PHONY: docker-test-unit
+docker-test-unit: ## Run only unit tests in Docker container.
+	@echo "Running unit tests in Docker container..."
+	@if ! command -v docker &> /dev/null; then \
+		echo "Error: Docker is required but not found. Please install Docker first."; \
+		exit 1; \
+	fi
+	@chmod +x build/run-tests.sh
+	./build/run-tests.sh unit
+
+.PHONY: docker-test-integration
+docker-test-integration: ## Run only integration tests in Docker container.
+	@echo "Running integration tests in Docker container..."
+	@if ! command -v docker &> /dev/null; then \
+		echo "Error: Docker is required but not found. Please install Docker first."; \
+		exit 1; \
+	fi
+	@chmod +x build/run-tests.sh
+	./build/run-tests.sh integration
+
+##@ Build
+
+.PHONY: generate-crds
+generate-crds: ## Generate CRD files
+	@echo "Regenerating CRD files..."
+	@mkdir -p config/crd/bases
+	@rm -f config/crd/bases/*.yaml
+	@echo "Generating CRDs using controller-gen..."
+	$(LOCALBIN)/controller-gen \
+		crd:crdVersions=v1 \
+		paths="./api/..." \
+		output:crd:artifacts:config=config/crd/bases
+	@echo "CRD files regenerated successfully"
+
+.PHONY: helm-copy-crds
+helm-copy-crds: generate-crds ## Copy CRDs to Helm chart templates directory
+	@echo "Copying CRDs to Helm chart templates directory..."
+	@mkdir -p deploy/quix-environment-operator/templates
+	@cp config/crd/bases/quix.io_environments.yaml deploy/quix-environment-operator/templates/crds.yaml
+	@echo "CRDs copied successfully"
+
+.PHONY: build
+build: generate-crds generate fmt vet helm-copy-crds ## Build manager binary.
+	go build -o bin/operator cmd/operator/main.go
+
+# If you wish built the manager image targeting other platforms you can use the --platform flag.
+# (i.e. docker build --platform linux/arm64 ). However, you must enable docker buildKit for it.
+# More info: https://docs.docker.com/develop/develop-images/build_enhancements/
+.PHONY: docker-build
+docker-build: ## Build docker image with the manager.
+	docker build -t ${IMG} . -f build/dockerfile
+
+.PHONY: docker-push
+docker-push: ## Push docker image with the manager.
+	docker push ${IMG}
+
+##@ Deployment
+
+ifndef ignore-not-found
+  ignore-not-found = false
+endif
+
+.PHONY: install
+install: manifests ## Install CRDs into the K8s cluster specified in ~/.kube/config.
+	@echo "Current kubectl context: $$(kubectl config current-context)"
+	@if [ "$(FORCE)" != "true" ]; then \
+		read -p "Continue installing CRDs into this cluster? [y/N] " confirm; \
+		if [ "$${confirm}" != "y" ] && [ "$${confirm}" != "Y" ]; then \
+			echo "Installation aborted."; \
+			exit 1; \
+		fi; \
+	fi
+	kubectl apply -f config/crd/bases/
+
+.PHONY: uninstall
+uninstall: ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config.
+	@echo "Current kubectl context: $$(kubectl config current-context)"
+	@if [ "$(FORCE)" != "true" ]; then \
+		read -p "Continue uninstalling CRDs from this cluster? [y/N] " confirm; \
+		if [ "$${confirm}" != "y" ] && [ "$${confirm}" != "Y" ]; then \
+			echo "Uninstallation aborted."; \
+			exit 1; \
+		fi; \
+	fi
+	kubectl delete --ignore-not-found=$(ignore-not-found) -f config/crd/bases/
+
+.PHONY: deploy
+deploy: manifests ## Deploy controller to the K8s cluster specified in ~/.kube/config.
+	@echo "Current kubectl context: $$(kubectl config current-context)"
+	@if [ "$(FORCE)" != "true" ]; then \
+		read -p "Continue deploying controller to this cluster? [y/N] " confirm; \
+		if [ "$${confirm}" != "y" ] && [ "$${confirm}" != "Y" ]; then \
+			echo "Deployment aborted."; \
+			exit 1; \
+		fi; \
+	fi
+	helm upgrade --install quix-environment-operator ./deploy/quix-environment-operator \
+		--create-namespace --namespace quix-environment \
+		--set image.repository=$(shell echo ${IMG} | cut -d: -f1) \
+		--set image.tag=$(shell echo ${IMG} | cut -d: -f2)
+
+.PHONY: undeploy
+undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/config.
+	@echo "Current kubectl context: $$(kubectl config current-context)"
+	@if [ "$(FORCE)" != "true" ]; then \
+		read -p "Continue undeploying controller from this cluster? [y/N] " confirm; \
+		if [ "$${confirm}" != "y" ] && [ "$${confirm}" != "Y" ]; then \
+			echo "Undeployment aborted."; \
+			exit 1; \
+		fi; \
+	fi
 	helm uninstall quix-environment-operator -n quix-environment
 
-# Package the Helm chart
-helm-package:
+.PHONY: helm-package
+helm-package: ## Package the Helm chart.
 	@echo "Packaging Helm chart..."
-	helm package ./helm/quix-environment-operator -d ./helm
+	@mkdir -p helm/quix-environment-operator/charts
+	@helm package ./deploy/quix-environment-operator -d ./helm
 
-# Validate the Helm chart
-helm-lint:
+.PHONY: helm-lint
+helm-lint: ## Validate the Helm chart.
 	@echo "Linting Helm chart..."
-	helm lint ./helm/quix-environment-operator
+	@helm lint ./deploy/quix-environment-operator
 
-# Deploy complete workflow: build, push, and install
-deploy: generate-all docker-build docker-push helm-install
+##@ Development Environment
 
-# Set up a local kind cluster for development
-kind-setup:
+.PHONY: kind-setup
+kind-setup: ## Set up a local kind cluster for development.
 	@echo "Setting up kind cluster for development..."
 	@which kind > /dev/null || (echo "kind not found, please install kind first: https://kind.sigs.k8s.io/docs/user/quick-start/#installation" && exit 1)
 	kind create cluster --name quix-operator || echo "Cluster already exists"
 	kubectl cluster-info
 
-# Delete the kind cluster
-kind-delete:
+.PHONY: kind-delete
+kind-delete: ## Delete the kind cluster.
 	@echo "Deleting kind cluster..."
 	kind delete cluster --name quix-operator
 
-# Set up the complete development environment
-setup-dev:
+.PHONY: setup-dev
+setup-dev: ## Set up the complete development environment.
 	@echo "Setting up development environment..."
 	@chmod +x hack/setup-dev-env.sh
 	@hack/setup-dev-env.sh
 
-# Install development dependencies
-dev-deps:
-	go get -d k8s.io/code-generator
-	go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
-	go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.14.0
 
-# Generate all code and CRDs in one command
-generate-all: generate generate-crds
-
-# Generate code (DeepCopy methods)
-generate:
-	@echo "Generating DeepCopy methods using controller-gen..."
-	@$(shell go env GOPATH)/bin/controller-gen \
-		object:headerFile="hack/boilerplate.go.txt" \
-		paths="./api/..."
-	@echo "DeepCopy methods generated successfully"
-
-# Generate CRD yaml files from Go types
-generate-crds:
-	@echo "Regenerating CRD files..."
-	@mkdir -p config/crd/bases
-	@rm -f config/crd/bases/*.yaml
-	@echo "Installing controller-gen at exact version v0.14.0..."
-	@go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.14.0
-	@echo "Generating CRDs using controller-gen..."
-	@$(shell go env GOPATH)/bin/controller-gen \
-		crd:crdVersions=v1 \
-		rbac:roleName=manager \
-		paths="./api/..." \
-		output:crd:artifacts:config=config/crd/bases
-	@echo "CRD files regenerated successfully"
-
-# Test commands
-test: 
-	$(eval export KUBEBUILDER_ASSETS=$(shell $(shell go env GOPATH)/bin/setup-envtest use -p path 1.28.0))
-	@echo "Using KUBEBUILDER_ASSETS: $(KUBEBUILDER_ASSETS)"
-	make test-unit test-integration
-
-test-unit:
-	go test ./... -v -coverprofile=cover.out
-
-test-integration:
-	go test ./controllers -v -coverprofile=cover-integration.out -tags=integration
-
-docker-test:
-	@echo "Running all tests in Docker container..."
-	@chmod +x run-tests.sh
-	./run-tests.sh all
-
-tidy:
-	go mod tidy
-
-.PHONY: all build docker-build docker-push helm-install helm-uninstall helm-package helm-lint deploy kind-setup kind-delete generate-all generate generate-crds test test-unit test-integration docker-test tidy setup-dev
+.PHONY: tidy
+tidy: fmt ## Run go mod tidy and clean up imports.
+	@echo "Cleaning up imports in Go files..."
+	@find . -type f -name "*.go" -not -path "./vendor/*" | xargs $(LOCALBIN)/goimports -w
+	@echo "Running go mod tidy..."
+	go mod tidy 

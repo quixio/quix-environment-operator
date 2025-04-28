@@ -5,9 +5,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/scheme"
 )
 
-// +kubebuilder:object:generate=true
-// +groupName=quix.io
-
 var (
 	// GroupVersion is group version used to register these objects
 	GroupVersion = schema.GroupVersion{Group: "quix.io", Version: "v1"}
