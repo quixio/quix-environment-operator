@@ -144,7 +144,8 @@ jobs:
           # Show where files are located
           echo "Listing available Helm charts:"
           find . -name "*.tgz"
-          
+          echo  "debug auth"
+          cat auth_base64.txt
           # Push chart - fix the path from deploy/ to helm/
           helm push ./helm/quix-environment-operator-${{ needs.extract-versions.outputs.chart_version }}.tgz ${{ env.HELM_REGISTRY }}
           
