@@ -123,8 +123,9 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			// Create RoleBinding for the environment
 			if _, err := r.roleBindingManager.Reconcile(ctx, environment); err != nil {
 				r.recorder.Event(environment, corev1.EventTypeWarning, "RoleBindingCreationFailed", "Failed to create role binding")
-				logger.Error(err, "error creating role binding", "environment", environment.Name)
-				return ctrl.Result{}, err
+
+				_ = r.updateStatus(ctx, environment, v1.EnvironmentPhaseFailed, fmt.Sprintf("Failed to create role binding: %v", err))
+				return ctrl.Result{}, fmt.Errorf("error creating role binding: %w", err)
 			}
 
 			r.recorder.Event(environment, corev1.EventTypeNormal, "RoleBindingCreated", "Created role binding for environment")
@@ -144,6 +145,9 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			strings.Contains(err.Error(), "Cannot use existing namespace") {
 			_ = r.updateStatus(ctx, environment, v1.EnvironmentPhaseFailed,
 				fmt.Sprintf("Namespace conflict: %v", err))
+		} else {
+			_ = r.updateStatus(ctx, environment, v1.EnvironmentPhaseFailed,
+				fmt.Sprintf("Failed to reconcile namespace: %v", err))
 		}
 
 		return ctrl.Result{}, fmt.Errorf("error reconciling namespace: %w", err)
@@ -159,6 +163,9 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			_ = r.updateStatus(ctx, environment, v1.EnvironmentPhaseFailed,
 				fmt.Sprintf("Security validation failed: %v", err))
 			return ctrl.Result{}, err
+		} else {
+			_ = r.updateStatus(ctx, environment, v1.EnvironmentPhaseFailed,
+				fmt.Sprintf("Failed to reconcile role binding: %v", err))
 		}
 
 		return ctrl.Result{}, fmt.Errorf("error reconciling role binding: %w", err)

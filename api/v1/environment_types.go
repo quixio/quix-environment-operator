@@ -31,12 +31,10 @@ type EnvironmentSpec struct {
 }
 
 // EnvironmentPhase represents the current phase of the Environment
-// +kubebuilder:validation:Enum=Pending;InProgress;Ready;Failed;Deleting
+// +kubebuilder:validation:Enum=InProgress;Ready;Failed;Deleting
 type EnvironmentPhase string
 
 const (
-	// EnvironmentPhasePending indicates the environment is pending
-	EnvironmentPhasePending EnvironmentPhase = "Pending"
 	// EnvironmentPhaseInProgress indicates the environment is in progress
 	EnvironmentPhaseInProgress EnvironmentPhase = "InProgress"
 	// EnvironmentPhaseReady indicates the environment is ready for use

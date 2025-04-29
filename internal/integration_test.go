@@ -1163,6 +1163,212 @@ var _ = Describe("Environment controller integration tests", func() {
 	})
 })
 
+// Tests for Failed state handling
+var _ = Describe("Environment controller Failed state handling", func() {
+	// Increase timeouts to give environment controller more time to reconcile
+	const timeout = time.Second * 5
+	const interval = time.Millisecond * 250
+
+	Context("When role binding creation fails", func() {
+		It("Should set the environment to Failed state with appropriate error message", func() {
+			ctx := context.Background()
+
+			// Save original ClusterRole name for restoration
+			originalClusterRole := Config.ClusterRoleName
+			defer func() {
+				Config.ClusterRoleName = originalClusterRole
+			}()
+
+			// Use a non-existent ClusterRole to force role binding creation failure
+			Config.ClusterRoleName = "non-existent-cluster-role"
+
+			// Create a test environment
+			env := createIntegrationTestEnvironment("test-rb-fail", nil, nil)
+			Expect(k8sClient.Create(ctx, env)).Should(Succeed())
+
+			// Look up the environment resource
+			envLookupKey := types.NamespacedName{
+				Name:      env.Name,
+				Namespace: "default",
+			}
+
+			// Verify it enters the Failed state
+			Eventually(func() quixiov1.EnvironmentPhase {
+				createdEnv := &quixiov1.Environment{}
+				if err := k8sClient.Get(ctx, envLookupKey, createdEnv); err != nil {
+					return ""
+				}
+				return createdEnv.Status.Phase
+			}, timeout, interval).Should(Equal(quixiov1.EnvironmentPhaseFailed))
+
+			// Verify error message is about role binding
+			createdEnv := &quixiov1.Environment{}
+			Expect(k8sClient.Get(ctx, envLookupKey, createdEnv)).Should(Succeed())
+			Expect(createdEnv.Status.Message).To(ContainSubstring("role binding"))
+
+			// Clean up
+			Expect(k8sClient.Delete(ctx, env)).Should(Succeed())
+		})
+	})
+
+	Context("When namespace reconciliation fails", func() {
+		It("Should set the environment to Failed state with appropriate error message", func() {
+			ctx := context.Background()
+
+			// First create a namespace directly that would conflict with our Environment resource
+			// but without any identifying labels
+			conflictId := "test-ns-fail"
+			nsName := fmt.Sprintf("%s%s", conflictId, Config.NamespaceSuffix)
+
+			// Create bare namespace
+			preExistingNs := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: nsName,
+				},
+			}
+
+			err := k8sClient.Create(ctx, preExistingNs)
+			Expect(err).To(Not(HaveOccurred()), "Failed to create pre-existing namespace")
+
+			// Create Environment that would try to use the same namespace
+			env := createIntegrationTestEnvironment(conflictId, nil, nil)
+			Expect(k8sClient.Create(ctx, env)).Should(Succeed())
+
+			// Lookup the environment and check its status
+			envLookupKey := types.NamespacedName{Name: env.Name, Namespace: "default"}
+			createdEnv := &quixiov1.Environment{}
+
+			// Verify the environment resource enters the Failed state
+			Eventually(func() quixiov1.EnvironmentPhase {
+				if err := k8sClient.Get(ctx, envLookupKey, createdEnv); err != nil {
+					return ""
+				}
+				return createdEnv.Status.Phase
+			}, timeout, interval).Should(Equal(quixiov1.EnvironmentPhaseFailed))
+
+			// Verify error message contains details about namespace reconciliation
+			Expect(createdEnv.Status.Message).To(Or(
+				ContainSubstring("namespace"),
+				ContainSubstring("reconcile"),
+			))
+
+			// Clean up
+			Expect(k8sClient.Delete(ctx, env)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, preExistingNs)).Should(Succeed())
+
+			// Wait for namespace deletion confirmation
+			existingNs := &corev1.Namespace{}
+			Eventually(func() bool {
+				nsGetErr := k8sClient.Get(ctx, types.NamespacedName{Name: nsName}, existingNs)
+				return IsNamespaceDeleted(existingNs, nsGetErr)
+			}, time.Second*10, interval).Should(BeTrue(), "Pre-existing namespace was not deleted")
+		})
+	})
+
+	Context("When role binding reconciliation fails", func() {
+		It("Should set the environment to Failed state with appropriate error message", func() {
+			ctx := context.Background()
+
+			// Save original ClusterRole name for restoration
+			originalClusterRole := Config.ClusterRoleName
+			defer func() {
+				Config.ClusterRoleName = originalClusterRole
+			}()
+
+			// Create a test environment with valid config first
+			env := createIntegrationTestEnvironment("test-rb-reconcile-fail", nil, nil)
+			Expect(k8sClient.Create(ctx, env)).Should(Succeed())
+
+			// Get the namespace name
+			nsName := fmt.Sprintf("%s%s", "test-rb-reconcile-fail", Config.NamespaceSuffix)
+			nsLookupKey := types.NamespacedName{Name: nsName}
+
+			// Wait for namespace to be created and environment to reach Ready state
+			createdNs := &corev1.Namespace{}
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, nsLookupKey, createdNs)
+				return err == nil
+			}, timeout, interval).Should(BeTrue(), "Namespace was not created")
+
+			envLookupKey := types.NamespacedName{
+				Name:      env.Name,
+				Namespace: "default",
+			}
+
+			// Wait for environment to become Ready
+			Eventually(func() quixiov1.EnvironmentPhase {
+				createdEnv := &quixiov1.Environment{}
+				if err := k8sClient.Get(ctx, envLookupKey, createdEnv); err != nil {
+					return ""
+				}
+				return createdEnv.Status.Phase
+			}, timeout, interval).Should(Equal(quixiov1.EnvironmentPhaseReady))
+
+			// Now change the ClusterRole to a dangerous one that will fail security validation
+			dangerousRoleName := "test-dangerous-rb-reconcile"
+
+			// Create a dangerous ClusterRole with role binding permissions
+			dangerousRole := &rbacv1.ClusterRole{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: dangerousRoleName,
+				},
+				Rules: []rbacv1.PolicyRule{
+					{
+						APIGroups: []string{"rbac.authorization.k8s.io"},
+						Resources: []string{"rolebindings", "clusterrolebindings"},
+						Verbs:     []string{"create", "update", "patch", "delete", "*"},
+					},
+				},
+			}
+
+			err := k8sClient.Create(ctx, dangerousRole)
+			if err != nil && !errors.IsAlreadyExists(err) {
+				Fail(fmt.Sprintf("Failed to create dangerous ClusterRole: %v", err))
+			}
+
+			// Update operator config to use the dangerous role
+			Config.ClusterRoleName = dangerousRoleName
+
+			// Force reconciliation by triggering it directly with the updated config
+			req := ctrl.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      env.Name,
+					Namespace: "default",
+				},
+			}
+			_, err = Controller.Reconcile(ctx, req)
+			Expect(err).To(HaveOccurred(), "Reconciliation should fail with security validation error")
+
+			// Verify environment transitions to Failed state
+			Eventually(func() quixiov1.EnvironmentPhase {
+				updatedEnv := &quixiov1.Environment{}
+				if err := k8sClient.Get(ctx, envLookupKey, updatedEnv); err != nil {
+					return ""
+				}
+				return updatedEnv.Status.Phase
+			}, timeout, interval).Should(Equal(quixiov1.EnvironmentPhaseFailed))
+
+			// Check error message
+			failedEnv := &quixiov1.Environment{}
+			Expect(k8sClient.Get(ctx, envLookupKey, failedEnv)).Should(Succeed())
+			Expect(failedEnv.Status.Message).To(Or(
+				ContainSubstring("security"),
+				ContainSubstring("role binding"),
+			))
+
+			// Clean up
+			Expect(k8sClient.Delete(ctx, env)).Should(Succeed())
+			k8sClient.Delete(ctx, dangerousRole)
+
+			// Wait for namespace deletion confirmation
+			Eventually(func() bool {
+				nsGetErr := k8sClient.Get(ctx, nsLookupKey, createdNs)
+				return IsNamespaceDeleted(createdNs, nsGetErr)
+			}, timeout, interval).Should(BeTrue(), "Namespace was not deleted")
+		})
+	})
+})
+
 func createIntegrationTestEnvironment(id string, labels, annotations map[string]string) *quixiov1.Environment {
 	return &quixiov1.Environment{
 		TypeMeta: metav1.TypeMeta{
