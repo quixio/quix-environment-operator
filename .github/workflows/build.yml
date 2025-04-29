@@ -133,6 +133,18 @@ jobs:
 
       - name: Push Helm chart to OCI registry
         run: |
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | helm registry login -u ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin registry-1.docker.io
+          # Login to Docker Hub OCI registry - using a file to avoid pipe issues
+          echo "${{ secrets.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}" > auth.txt
+          cat auth.txt | base64 > auth_base64.txt
+          
+          # Create Helm registry config manually
+          mkdir -p ~/.config/helm
+          echo '{"auths":{"registry-1.docker.io":{"auth":"'$(cat auth_base64.txt)'"}}}' > ~/.config/helm/registry.json
+          
+          # Push chart
           helm push ./deploy/quix-environment-operator-${{ needs.extract-versions.outputs.chart_version }}.tgz ${{ env.HELM_REGISTRY }}
+          
+          # Clean up
+          rm auth.txt auth_base64.txt
+          
           echo "Helm chart pushed successfully" 
