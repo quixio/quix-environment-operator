@@ -114,7 +114,7 @@ jobs:
             docker push ${REGISTRY}/${IMAGE_NAME}:latest
           fi
           echo "Docker image pushed successfully"
-
+# whitespace
   push-helm:
     needs: [extract-versions, build-helm]
     # if: github.event_name != 'pull_request'
