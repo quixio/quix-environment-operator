@@ -148,8 +148,7 @@ func (m *DefaultManager) Delete(ctx context.Context, env *v1.Environment) error 
 	logger.V(1).Info("Attempting to delete namespace")
 
 	// Check if the namespace exists
-	namespace := &corev1.Namespace{}
-	err := m.client.Get(ctx, types.NamespacedName{Name: namespaceName}, namespace)
+	namespace, err := m.Get(ctx, env)
 	if err != nil {
 		if errors.IsNotFound(err) {
 			logger.V(1).Info("Namespace already deleted")
