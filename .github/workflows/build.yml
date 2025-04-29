@@ -118,17 +118,6 @@ jobs:
           echo "Contents of helm directory:"
           ls -la helm/
           
-          # Log in to Docker Hub
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin
-          
-          # Set up a separate repository for Helm charts
-          echo "Logging in to Helm registry..."
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | helm registry login registry-1.docker.io --username ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin
-          
-          # Define a separate Helm repository
-          HELM_CHART_REPO="${REGISTRY}/quixanalytics/${HELM_REPO_NAME}"
-          echo "Using separate Helm chart repository: $HELM_CHART_REPO"
-          
           # Find the chart file
           CHART_FILE=$(find . -name "quix-environment-operator-${{ needs.extract-versions.outputs.chart_version }}.tgz")
           
@@ -139,8 +128,12 @@ jobs:
           
           echo "Found chart file at: $CHART_FILE"
           
-          # Push to the separate Helm chart repository
-          echo "Pushing to Helm chart repository..."
-          helm push $CHART_FILE oci://${HELM_CHART_REPO}
+          # Create a simple PAT-based login for Docker Hub
+          echo "Logging in to Docker Hub with PAT..."
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin
           
-          echo "Helm chart pushed successfully to $HELM_CHART_REPO" 
+          # Simple direct Helm push using the exact format from the article
+          echo "Pushing Helm chart to Docker Hub..."
+          helm push $CHART_FILE oci://registry-1.docker.io/quixanalytics/${HELM_REPO_NAME}
+          
+          echo "Helm chart push operation completed" 
