@@ -134,6 +134,7 @@ jobs:
           
           # Simple direct Helm push using the exact format from the article
           echo "Pushing Helm chart to Docker Hub..."
-          helm push $CHART_FILE oci://registry-1.docker.io/quixanalytics/${HELM_REPO_NAME}
+          echo "Debug:helm push $CHART_FILE ${HELM_REGISTRY}/${HELM_REPO_NAME}"
+          helm push $CHART_FILE ${HELM_REGISTRY}/${HELM_REPO_NAME}
           
           echo "Helm chart push operation completed" 
