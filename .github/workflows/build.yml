@@ -11,6 +11,7 @@ env:
   REGISTRY: docker.io
   IMAGE_NAME: quixanalytics/quix-environment-operator
   HELM_REGISTRY: oci://registry-1.docker.io/quixanalytics
+  HELM_REPO_NAME: quix-environment-operator-helm
 
 jobs:
   extract-versions:
@@ -117,14 +118,18 @@ jobs:
           echo "Contents of helm directory:"
           ls -la helm/
           
-          # Log in to Docker Hub OCI registry
+          # Log in to Docker Hub
           echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin
           
-          # Try to use Helm login directly
+          # Set up a separate repository for Helm charts
           echo "Logging in to Helm registry..."
           echo "${{ secrets.DOCKERHUB_TOKEN }}" | helm registry login registry-1.docker.io --username ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin
           
-          # Find the chart file and push it
+          # Define a separate Helm repository
+          HELM_CHART_REPO="${REGISTRY}/quixanalytics/${HELM_REPO_NAME}"
+          echo "Using separate Helm chart repository: $HELM_CHART_REPO"
+          
+          # Find the chart file
           CHART_FILE=$(find . -name "quix-environment-operator-${{ needs.extract-versions.outputs.chart_version }}.tgz")
           
           if [ -z "$CHART_FILE" ]; then
@@ -133,6 +138,9 @@ jobs:
           fi
           
           echo "Found chart file at: $CHART_FILE"
-          helm push $CHART_FILE ${{ env.HELM_REGISTRY }}
           
-          echo "Helm chart pushed successfully" 
+          # Push to the separate Helm chart repository
+          echo "Pushing to Helm chart repository..."
+          helm push $CHART_FILE oci://${HELM_CHART_REPO}
+          
+          echo "Helm chart pushed successfully to $HELM_CHART_REPO" 
