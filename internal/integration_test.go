@@ -890,6 +890,90 @@ var _ = Describe("Environment controller integration tests", func() {
 				return IsNamespaceDeleted(createdNs, nsGetErr)
 			}, deletionTimeout, interval).Should(BeTrue(), "Namespace deletion was not initiated")
 		})
+
+		It("Should handle deletion when namespace is not managed by operator", func() {
+			ctx := context.Background()
+
+			// First, create a namespace directly with same name pattern but not managed by our operator
+			unownedId := "test-unowned-ns"
+			nsName := fmt.Sprintf("%s%s", unownedId, Config.NamespaceSuffix)
+
+			// Create bare namespace with no management labels
+			preExistingNs := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: nsName,
+					Labels: map[string]string{
+						"other-controller": "true",
+					},
+				},
+			}
+
+			err := k8sClient.Create(ctx, preExistingNs)
+			Expect(err).To(Not(HaveOccurred()), "Failed to create pre-existing namespace")
+
+			// Create an Environment resource that points to the same namespace
+			env := createIntegrationTestEnvironment(unownedId, nil, nil)
+			Expect(k8sClient.Create(ctx, env)).Should(Succeed())
+
+			// Environment should go to Failed state since namespace exists but isn't managed
+			envLookupKey := types.NamespacedName{Name: env.Name, Namespace: testNamespace}
+			createdEnv := &quixiov1.Environment{}
+
+			Eventually(func() quixiov1.EnvironmentPhase {
+				if err := k8sClient.Get(ctx, envLookupKey, createdEnv); err != nil {
+					return ""
+				}
+				return createdEnv.Status.Phase
+			}, timeout, interval).Should(Equal(quixiov1.EnvironmentPhaseFailed))
+
+			// Make sure the error message is about namespace not being managed
+			Eventually(func() string {
+				if err := k8sClient.Get(ctx, envLookupKey, createdEnv); err != nil {
+					return ""
+				}
+				return createdEnv.Status.Message
+			}, timeout, interval).Should(ContainSubstring("not managed by this operator"))
+
+			// Now delete the Environment - this should delete the CR but not touch the namespace
+			Expect(k8sClient.Delete(ctx, createdEnv)).Should(Succeed())
+
+			// Environment should go to Deleting state briefly before being removed completely
+			Eventually(func() bool {
+				if err := k8sClient.Get(ctx, envLookupKey, createdEnv); err != nil {
+					if errors.IsNotFound(err) {
+						// Environment was fully deleted, which is what we want
+						return true
+					}
+					return false
+				}
+				// If we can still get it, then it should be in Deleting phase
+				return createdEnv.Status.Phase == quixiov1.EnvironmentPhaseDeleting
+			}, timeout, interval).Should(BeTrue(), "Environment should either be in Deleting phase or fully deleted")
+
+			// Verify Environment is eventually fully deleted
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, envLookupKey, createdEnv)
+				return errors.IsNotFound(err)
+			}, deletionTimeout, interval).Should(BeTrue(), "Environment was not deleted")
+
+			// Verify the pre-existing namespace was NOT deleted
+			nsLookupKey := types.NamespacedName{Name: nsName}
+			existingNs := &corev1.Namespace{}
+			err = k8sClient.Get(ctx, nsLookupKey, existingNs)
+			Expect(err).NotTo(HaveOccurred(), "Pre-existing namespace should not be deleted")
+
+			// Verify no deletion timestamp was set on the namespace
+			Expect(existingNs.DeletionTimestamp).To(BeNil(), "Namespace should not have deletion timestamp")
+
+			// Clean up
+			Expect(k8sClient.Delete(ctx, existingNs)).Should(Succeed())
+
+			// Verify namespace deletion for cleanup
+			Eventually(func() bool {
+				nsGetErr := k8sClient.Get(ctx, nsLookupKey, existingNs)
+				return IsNamespaceDeleted(existingNs, nsGetErr)
+			}, deletionTimeout, interval).Should(BeTrue(), "Pre-existing namespace was not deleted during cleanup")
+		})
 	})
 
 	Context("When creating Environments with invalid metadata", func() {

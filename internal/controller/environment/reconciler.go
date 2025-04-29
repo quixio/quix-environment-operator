@@ -197,6 +197,7 @@ func (r *EnvironmentReconciler) handleDeletion(ctx context.Context, env *v1.Envi
 
 	// Get namespace name using the namespace manager
 	namespaceName := r.namespaceManager.GetNamespaceName(env)
+	skipWaiting := false
 
 	// Check if namespace still exists
 	exists, err := r.namespaceManager.Exists(ctx, env)
@@ -210,17 +211,31 @@ func (r *EnvironmentReconciler) handleDeletion(ctx context.Context, env *v1.Envi
 		if !isDeleting {
 			// Namespace exists and is not being deleted, so delete it
 			logger.V(0).Info("Deleting namespace", "namespace", namespaceName)
-			if err := r.namespaceManager.Delete(ctx, env); err != nil {
-				return ctrl.Result{Requeue: true}, fmt.Errorf("failed to delete namespace: %w", err)
+			err := r.namespaceManager.Delete(ctx, env)
+			if err != nil {
+				// If error is due to namespace not being managed, log but continue with Environment deletion
+				if strings.Contains(err.Error(), "not managed by this operator") {
+					logger.V(0).Info("Namespace not managed by this operator, continuing with Environment deletion", "namespace", namespaceName)
+					r.recorder.Event(env, corev1.EventTypeWarning, "NamespaceNotManaged",
+						fmt.Sprintf("Namespace %s is not managed by this operator and was not deleted", namespaceName))
+
+					// For unmanaged namespaces, skip waiting and proceed to finalizer removal
+					skipWaiting = true
+				} else {
+					// For other errors, retry
+					return ctrl.Result{Requeue: true}, fmt.Errorf("failed to delete namespace: %w", err)
+				}
 			}
 		}
 
-		// Namespace is being deleted, requeue to check again later
-		logger.V(1).Info("Namespace is being deleted, waiting to complete", "namespace", namespaceName)
-		return ctrl.Result{Requeue: true, RequeueAfter: time.Second * 5}, nil
+		// Wait for the namespace deletion to complete (unless we're skipping for unmanaged namespaces)
+		if !skipWaiting {
+			logger.V(1).Info("Namespace is being deleted, waiting to complete", "namespace", namespaceName)
+			return ctrl.Result{Requeue: true, RequeueAfter: time.Second * 5}, nil
+		}
 	}
 
-	// Namespace is gone, remove finalizer and complete deletion
+	// Namespace is gone or not managed, remove finalizer and complete deletion
 	logger.V(1).Info("Environment resources cleaned up, removing finalizer")
 
 	if err := r.environmentManager.RemoveFinalizer(ctx, env, EnvironmentFinalizer); err != nil {
