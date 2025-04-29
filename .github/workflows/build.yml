@@ -114,7 +114,7 @@ jobs:
             docker push ${REGISTRY}/${IMAGE_NAME}:latest
           fi
           echo "Docker image pushed successfully"
-# whitespace
+
   push-helm:
     needs: [extract-versions, build-helm]
     # if: github.event_name != 'pull_request'
@@ -141,8 +141,12 @@ jobs:
           mkdir -p ~/.config/helm
           echo '{"auths":{"registry-1.docker.io":{"auth":"'$(cat auth_base64.txt)'"}}}' > ~/.config/helm/registry.json
           
-          # Push chart
-          helm push ./deploy/quix-environment-operator-${{ needs.extract-versions.outputs.chart_version }}.tgz ${{ env.HELM_REGISTRY }}
+          # Show where files are located
+          echo "Listing available Helm charts:"
+          find . -name "*.tgz"
+          
+          # Push chart - fix the path from deploy/ to helm/
+          helm push ./helm/quix-environment-operator-${{ needs.extract-versions.outputs.chart_version }}.tgz ${{ env.HELM_REGISTRY }}
           
           # Clean up
           rm auth.txt auth_base64.txt
