@@ -20,6 +20,6 @@ entries:
     - https://github.com/quix-analytics/quix-environment-operator
     type: application
     urls:
-    - https://github.com/quixio/quix-environment-operator/releases/download/quix-environment-operator-0.1.0/quix-environment-operator-0.1.0.tgz
+    - https://quixio.github.io/quix-environment-operator/quix-environment-operator-0.1.0/quix-environment-operator-0.1.0.tgz
     version: 0.1.0
 generated: "2025-04-30T16:01:15.07517112Z"
