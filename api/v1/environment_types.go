@@ -64,6 +64,8 @@ const (
 type ResourceStatus struct {
 	Phase   ResourceStatusPhase `json:"phase,omitempty"`
 	Message string              `json:"message,omitempty"`
+	// ResourceName stores the name of the created resource (e.g. namespace name, role binding name)
+	ResourceName string `json:"resourceName,omitempty"`
 }
 
 // EnvironmentStatus defines the observed state of Environment

@@ -355,7 +355,17 @@ func isValidLabelPrefix(key string) bool {
 
 // GetNamespaceName returns the standardized name for the environment namespace
 func (m *DefaultManager) GetNamespaceName(env *v1.Environment) string {
-	return fmt.Sprintf("%s%s", env.Spec.Id, m.config.GetNamespaceSuffix())
+	// Use stored namespace name if available
+	if env.Status.NamespaceStatus != nil && env.Status.NamespaceStatus.ResourceName != "" {
+		return env.Status.NamespaceStatus.ResourceName
+	}
+
+	// Otherwise use the default naming convention
+	if env.Status.NamespaceStatus == nil {
+		env.Status.NamespaceStatus = &v1.ResourceStatus{}
+	}
+	env.Status.NamespaceStatus.ResourceName = fmt.Sprintf("%s%s", env.Spec.Id, m.config.GetNamespaceSuffix())
+	return env.Status.NamespaceStatus.ResourceName
 }
 
 // isValidEnvironmentId checks if the environment ID matches the configured regex pattern
