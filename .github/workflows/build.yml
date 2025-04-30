@@ -182,8 +182,8 @@ jobs:
           # Set debug mode for more information
           export HELM_DEBUG=1
           
-          # Force push to the repository
-          helm push --force ${CHART_FILE} ${HELM_REGISTRY}/${HELM_REPO_NAME}
+          # Push to the repository (without force flag as it's not supported)
+          helm push ${CHART_FILE} ${HELM_REGISTRY}/${HELM_REPO_NAME}
           
           echo "Helm chart pushed successfully"
           echo "To pull this chart use:"
