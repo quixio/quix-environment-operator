@@ -145,7 +145,7 @@ jobs:
             git reset --hard
             git commit --allow-empty -m "Initialize gh-pages branch"
             git push origin gh-pages
-            git checkout -
+            git checkout main
             echo "Created gh-pages branch successfully"
           else
             echo "gh-pages branch already exists"
