@@ -138,6 +138,10 @@ jobs:
 
       - name: Create gh-pages branch if needed
         run: |
+          # Save current branch name
+          CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          echo "Current branch: ${CURRENT_BRANCH}"
+          
           # Check if gh-pages branch exists
           if ! git ls-remote --heads origin gh-pages | grep -q 'gh-pages'; then
             echo "Creating gh-pages branch"
@@ -145,7 +149,19 @@ jobs:
             git reset --hard
             git commit --allow-empty -m "Initialize gh-pages branch"
             git push origin gh-pages
-            git checkout main
+            
+            # Try to go back to original branch
+            if git checkout ${CURRENT_BRANCH}; then
+              echo "Returned to ${CURRENT_BRANCH} branch"
+            elif git checkout main; then
+              echo "Returned to main branch"
+            elif git checkout master; then
+              echo "Returned to master branch"
+            else
+              echo "Warning: Could not return to original branch, using default branch"
+              git checkout $(git remote show origin | grep 'HEAD branch' | cut -d' ' -f5)
+            fi
+            
             echo "Created gh-pages branch successfully"
           else
             echo "gh-pages branch already exists"
