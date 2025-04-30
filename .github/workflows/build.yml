@@ -203,8 +203,8 @@ jobs:
               echo "Fixed index.yaml URLs"
             fi
             
-            # Return to the original branch
-            git checkout ${{ github.ref_name }}
+            # Return to the original branch - use explicit branch name instead of github.ref_name
+            git checkout $(git branch -r | grep -v gh-pages | grep origin/main || echo "origin/main" | sed 's/origin\///')
           fi
 
       - name: Create config file
@@ -235,11 +235,29 @@ jobs:
         run: |
           echo "Chart-releaser action failed, using manual approach"
           
-          # Create output directories
+          # Save the source branch name
+          SOURCE_BRANCH=$(git branch --show-current)
+          echo "Current branch: ${SOURCE_BRANCH}"
+          
+          # Package the chart while still on source branch
           mkdir -p .cr-release-packages
           
-          # Package the chart
-          helm package helm/quix-environment-operator -d .cr-release-packages
+          # Make sure charts dir exists and package before switching branch
+          if [ -d "helm/quix-environment-operator" ]; then
+            helm package helm/quix-environment-operator -d .cr-release-packages
+          else
+            # Fallback to look for the chart elsewhere
+            find . -name Chart.yaml -exec dirname {} \; | while read chart_dir; do
+              echo "Found chart at: ${chart_dir}"
+              helm package ${chart_dir} -d .cr-release-packages
+            done
+          fi
+          
+          # Make sure we actually packaged something
+          if [ ! "$(ls -A .cr-release-packages)" ]; then
+            echo "Error: No charts were packaged"
+            exit 1
+          fi
           
           # Get chart filename
           CHART_FILE=$(basename $(find .cr-release-packages -name "*.tgz"))
