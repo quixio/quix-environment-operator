@@ -185,9 +185,52 @@ jobs:
           echo "Updated chart version to ${{ needs.extract-versions.outputs.chart_version }}"
           cat helm/quix-environment-operator/Chart.yaml
 
+      - name: Create config file
+        run: |
+          cat > cr-config.yaml <<EOF
+          index-path: ./index.yaml
+          charts-repo: https://quixio.github.io/quix-environment-operator/
+          pages-branch: gh-pages
+          EOF
+
       - name: Run chart-releaser
         uses: helm/chart-releaser-action@v1.7.0
+        with:
+          charts_dir: helm
+          config: cr-config.yaml
         env:
           CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CR_SKIP_EXISTING: "true"
+          CR_FORCE: "true"
           CR_PAGES_BRANCH: "gh-pages"
+          CR_RELEASE_NAME_TEMPLATE: "{{ .Name }}-{{ .Version }}"
+          
+      - name: Fallback - Manual Chart Publishing
+        if: failure()
+        run: |
+          echo "Chart-releaser action failed, using manual approach"
+          
+          # Create output directories
+          mkdir -p .cr-release-packages
+          mkdir -p .cr-index
+          
+          # Package the chart
+          helm package helm/quix-environment-operator -d .cr-release-packages
+          
+          # Create or update the Helm repo index file
+          helm repo index --url https://quixio.github.io/quix-environment-operator/ .cr-release-packages
+          
+          # Setup gh-pages branch content
+          git fetch origin gh-pages
+          git checkout gh-pages
+          
+          # Copy packaged charts and index file
+          cp -r .cr-release-packages/*.tgz .
+          cp .cr-release-packages/index.yaml .
+          
+          # Commit and push to gh-pages
+          git add .
+          git commit -m "Update Helm chart release [skip ci]"
+          git push origin gh-pages
+          
+          echo "Manually published chart to GitHub Pages"
