@@ -1,0 +1,60 @@
+apiVersion: quix.io/v1
+kind: Environment
+metadata:
+  name: full-featured-environment
+  # You can add standard Kubernetes metadata
+  labels:
+    example: "true"
+    purpose: "demonstration"
+  annotations:
+    description: "Full example of Environment CRD with all possible fields"
+spec:
+  # Required: Unique identifier for the environment
+  # Must be 3-44 characters long, lowercase alphanumeric with hyphens (not at start/end)
+  # Pattern: ^[a-z0-9]([a-z0-9\-]*[a-z0-9])?$
+  # This will be used to generate the namespace name (combined with configured suffix)
+  id: full-example
+  
+  # Optional: Custom annotations to add to the namespace
+  # All annotation keys must have the 'quix.io/' prefix
+  # Protected annotations that cannot be overridden:
+  # - quix.io/created-by
+  # - quix.io/environment-crd-namespace
+  # - quix.io/environment-resource-name
+  annotations:
+    quix.io/description: "Comprehensive example environment with all fields"
+    quix.io/team: "platform-team"
+    quix.io/owner: "jane.doe@example.com"
+    quix.io/cost-center: "42"
+    quix.io/purpose: "demonstration"
+    quix.io/lifetime: "temporary"
+    quix.io/created-date: "2023-01-01"
+    
+  # Optional: Custom labels to add to the namespace
+  # All label keys must have the 'quix.io/' prefix
+  # Protected labels that cannot be overridden:
+  # - quix.io/managed-by
+  # - quix.io/environment-id
+  # - quix.io/environment-name
+  # Labels are used for grouping and filtering resources
+  labels:
+    quix.io/tier: "development"
+    quix.io/project: "data-pipeline"
+    quix.io/department: "engineering"
+    quix.io/expiration-date: "2023-12-31"
+    quix.io/criticality: "low"
+    quix.io/compliance-level: "standard"
+    quix.io/data-classification: "internal"
+
+# Status fields will be populated by the operator (read-only)
+# status:
+#   phase: Ready
+#   message: "Environment successfully provisioned"
+#   observedGeneration: 1
+#   lastUpdated: "2023-01-01T12:00:00Z"
+#   namespaceStatus:
+#     phase: "Active"
+#     message: "Namespace is active"
+#   roleBindingStatus:
+#     phase: "Active"
+#     message: "Role binding created successfully" 

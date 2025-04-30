@@ -47,8 +47,8 @@
 
 5.  **Status Reporting & Events**
     *   **Detailed Status Tracking:**
-        *   **Overall Environment Phase:** Track the overall state (`Pending`, `InProgress`, `Ready`, `Failed`, `Deleting`) in the Environment CR's `.status.phase`.
-        *   **Resource-Specific Phases:** Track individual states for managed resources (`.status.namespacePhase`, `.status.roleBindingPhase`) as ResourcePhase objects with phase and message fields.
+        *   **Overall Environment Phase:** Track the overall state (`InProgress`, `Ready`, `Failed`, `Deleting`) in the Environment CR's `.status.phase`.
+        *   **Resource-Specific Phases:** Track individual states for managed resources (`.status.namespaceStatus`, `.status.roleBindingStatus`) as ResourceStatus objects with phase and message fields.
         *   **ObservedGeneration:** Track the most recently observed generation for proper reconciliation.
         *   **LastUpdated:** Track when status was last updated.
         *   **Message:** Include human-readable messages explaining the current status.
