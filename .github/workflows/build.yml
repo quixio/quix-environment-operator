@@ -185,12 +185,37 @@ jobs:
           echo "Updated chart version to ${{ needs.extract-versions.outputs.chart_version }}"
           cat helm/quix-environment-operator/Chart.yaml
 
+      - name: Fix existing index.yaml if needed
+        run: |
+          # Check if index.yaml exists in gh-pages branch and fix URLs
+          if git ls-remote --heads origin gh-pages | grep -q 'gh-pages'; then
+            echo "Checking for existing index.yaml in gh-pages branch"
+            git fetch origin gh-pages
+            git checkout gh-pages
+            
+            if [ -f "index.yaml" ]; then
+              echo "Fixing URLs in existing index.yaml"
+              # Replace GitHub releases URLs with GitHub Pages URLs
+              sed -i 's|https://github.com/quixio/quix-environment-operator/releases/download/|https://quixio.github.io/quix-environment-operator/|g' index.yaml
+              git add index.yaml
+              git commit -m "Fix chart URLs in index.yaml [skip ci]"
+              git push origin gh-pages
+              echo "Fixed index.yaml URLs"
+            fi
+            
+            # Return to the original branch
+            git checkout ${{ github.ref_name }}
+          fi
+
       - name: Create config file
         run: |
           cat > cr-config.yaml <<EOF
           index-path: ./index.yaml
           charts-repo: https://quixio.github.io/quix-environment-operator/
           pages-branch: gh-pages
+          # Add explicit URL formats to avoid GitHub releases
+          chart-url-template: "https://quixio.github.io/quix-environment-operator/{{ .Name }}-{{ .Version }}.tgz"
+          package-path: .cr-release-packages
           EOF
 
       - name: Run chart-releaser
@@ -212,25 +237,34 @@ jobs:
           
           # Create output directories
           mkdir -p .cr-release-packages
-          mkdir -p .cr-index
           
           # Package the chart
           helm package helm/quix-environment-operator -d .cr-release-packages
           
-          # Create or update the Helm repo index file
-          helm repo index --url https://quixio.github.io/quix-environment-operator/ .cr-release-packages
+          # Get chart filename
+          CHART_FILE=$(basename $(find .cr-release-packages -name "*.tgz"))
+          echo "Chart file: ${CHART_FILE}"
           
-          # Setup gh-pages branch content
+          # Clone gh-pages branch 
           git fetch origin gh-pages
           git checkout gh-pages
           
-          # Copy packaged charts and index file
-          cp -r .cr-release-packages/*.tgz .
-          cp .cr-release-packages/index.yaml .
+          # Copy packaged chart
+          cp .cr-release-packages/*.tgz .
+          
+          # Create or update the Helm repo index file on gh-pages
+          # Important: Use the URL that refers directly to files in gh-pages, not GitHub releases
+          if [ -f "index.yaml" ]; then
+            # Update existing index
+            helm repo index --url https://quixio.github.io/quix-environment-operator/ --merge index.yaml .
+          else
+            # Create new index
+            helm repo index --url https://quixio.github.io/quix-environment-operator/ .
+          fi
           
           # Commit and push to gh-pages
           git add .
           git commit -m "Update Helm chart release [skip ci]"
           git push origin gh-pages
           
-          echo "Manually published chart to GitHub Pages"
+          echo "Manually published chart to GitHub Pages at https://quixio.github.io/quix-environment-operator/${CHART_FILE}"
