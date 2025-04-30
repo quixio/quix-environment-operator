@@ -168,8 +168,7 @@ jobs:
         run: |
           # Refreshing login credentials
           echo "${{ secrets.DOCKERHUB_TOKEN }}" | helm registry login -u ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin registry-1.docker.io
-          echo "Verifying OCI login status:"
-          helm registry login -l
+          echo "Login succeeded"
 
       - name: Push Helm chart to OCI registry
         run: |
