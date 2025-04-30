@@ -142,8 +142,12 @@ jobs:
           CHART_FILE=$(find ./helm -name "quix-environment-operator-${{ needs.extract-versions.outputs.chart_version }}.tgz")
           echo "Found chart at: ${CHART_FILE}"
           
-          # Push with version tag - this is supported in all Helm versions with OCI
+          # Push with version tag - use the correct repository name
           echo "Pushing Helm chart with version tag: ${{ needs.extract-versions.outputs.chart_version }}"
-          helm push ${CHART_FILE} ${{ env.HELM_REGISTRY }}
+          helm push ${CHART_FILE} ${HELM_REGISTRY}/${HELM_REPO_NAME}
+          
+          # Print pull command for verification
+          echo "To pull this chart use:"
+          echo "helm pull oci://registry-1.docker.io/quixanalytics/${HELM_REPO_NAME} --version ${{ needs.extract-versions.outputs.chart_version }}"
           
           echo "Helm chart pushed successfully"
