@@ -146,31 +146,45 @@ jobs:
           echo "Found chart at: ${CHART_FILE}"
           echo "CHART_FILE=${CHART_FILE}" >> $GITHUB_ENV
 
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-          registry: registry-1.docker.io
-
       - name: Create repo if it doesn't exist
         run: |
-          # Pull, tag, and push a small image to ensure repository exists
-          docker pull busybox:latest
-          docker tag busybox:latest ${REGISTRY}/${HELM_REPO_NAME}:init
-          docker push ${REGISTRY}/${HELM_REPO_NAME}:init
-          echo "Repository initialized: ${REGISTRY}/${HELM_REPO_NAME}"
+          # Create an empty OCI Helm chart repository
+          mkdir -p empty-chart
+          cd empty-chart
+          helm create temp-chart
+          helm package temp-chart
+          cd ..
+          
+          # Try to push this chart first as initialization
+          echo "Initializing repository with empty chart"
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | helm registry login -u ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin registry-1.docker.io
+          if helm push empty-chart/temp-chart-0.1.0.tgz ${HELM_REGISTRY}/${HELM_REPO_NAME}; then
+            echo "Repository initialized via Helm"
+          else 
+            echo "Repository initialization failed, but continuing with main chart push"
+          fi
 
       - name: Log in to Docker Hub OCI registry (for Helm)
         run: |
+          # Refreshing login credentials
           echo "${{ secrets.DOCKERHUB_TOKEN }}" | helm registry login -u ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin registry-1.docker.io
+          echo "Verifying OCI login status:"
+          helm registry login -l
 
       - name: Push Helm chart to OCI registry
         run: |
           echo "Pushing Helm chart with chartVersion: ${{ needs.extract-versions.outputs.chart_version }}"
           
-          # Push using native Helm commands
-          helm push ${CHART_FILE} ${HELM_REGISTRY}/${HELM_REPO_NAME}
+          # Use verbose logging to help troubleshoot
+          helm version
+          echo "Using chart file: ${CHART_FILE}"
+          ls -la ${CHART_FILE}
+          
+          # Set debug mode for more information
+          export HELM_DEBUG=1
+          
+          # Force push to the repository
+          helm push --force ${CHART_FILE} ${HELM_REGISTRY}/${HELM_REPO_NAME}
           
           echo "Helm chart pushed successfully"
           echo "To pull this chart use:"
