@@ -10,8 +10,10 @@ on:
 env:
   REGISTRY: docker.io
   IMAGE_NAME: quixanalytics/quix-environment-operator
-  HELM_REGISTRY: oci://registry-1.docker.io/quixanalytics
-  HELM_REPO_NAME: quix-environment-operator-helm
+  # Modified registry URL format to avoid "insufficient_scope: authorization failed" error
+  # Using a simpler URL structure separates the registry from the repository path
+  HELM_REGISTRY: oci://registry-1.docker.io
+  HELM_REPO_NAME: quixanalytics/quix-environment-operator-helm
 
 jobs:
   extract-versions:
@@ -159,12 +161,20 @@ jobs:
           CHART_FILE=$(find ./helm -name "quix-environment-operator-${{ needs.extract-versions.outputs.chart_version }}.tgz")
           echo "Found chart at: ${CHART_FILE}"
           
-          # Push with version tag - use the correct repository name
+          # Create the repository if it doesn't exist (this is a no-op if it already exists)
+          # This addresses the "insufficient_scope: authorization failed" error which often
+          # occurs when the repository doesn't exist yet in Docker Hub or when the scope
+          # is not properly set up for the token
+          docker pull busybox:latest || true
+          docker tag busybox:latest ${REGISTRY}/${HELM_REPO_NAME}:init || true
+          docker push ${REGISTRY}/${HELM_REPO_NAME}:init || true
+          
+          # Push with version tag
           echo "Pushing Helm chart with chartVersion: ${{ needs.extract-versions.outputs.chart_version }}"
           helm push ${CHART_FILE} ${HELM_REGISTRY}/${HELM_REPO_NAME}
           
           # Print pull command for verification
           echo "To pull this chart use:"
-          echo "helm pull oci://registry-1.docker.io/quixanalytics/${HELM_REPO_NAME} --version ${{ needs.extract-versions.outputs.chart_version }}"
+          echo "helm pull oci://registry-1.docker.io/${HELM_REPO_NAME} --version ${{ needs.extract-versions.outputs.chart_version }}"
           
           echo "Helm chart pushed successfully"
