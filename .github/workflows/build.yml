@@ -132,59 +132,38 @@ jobs:
 
       - name: Configure Helm and package chart
         run: |
-          echo "Enabling experimental OCI support for Helm"
-          export HELM_EXPERIMENTAL_OCI=1
-          echo "HELM_EXPERIMENTAL_OCI=1" >> $GITHUB_ENV
-          
           # Package the Helm chart
           mkdir -p ./dist
-          cd helm
-          helm package quix-environment-operator -d ../dist
-          cd ..
+          helm package ./helm/quix-environment-operator -d ./dist
           echo "Packaged Helm chart successfully"
-          CHART_FILE=$(find ./dist -name "quix-environment-operator-${{ needs.extract-versions.outputs.chart_version }}.tgz")
-          echo "Found chart at: ${CHART_FILE}"
-          echo "CHART_FILE=${CHART_FILE}" >> $GITHUB_ENV
+          ls -la ./dist/
 
-      - name: Create repo if it doesn't exist
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Create Docker repository first using plain Docker
         run: |
-          # Create an empty OCI Helm chart repository
-          mkdir -p empty-chart
-          cd empty-chart
-          helm create temp-chart
-          helm package temp-chart
-          cd ..
+          # Create a minimal Docker image to establish the repository
+          echo "FROM scratch" > Dockerfile.empty
+          echo "LABEL org.opencontainers.image.description=\"Helm chart repository\"" >> Dockerfile.empty
+          docker build -t quixanalytics/quix-environment-operator-helm:init -f Dockerfile.empty .
+          docker push quixanalytics/quix-environment-operator-helm:init
+          echo "Repository established via Docker"
+
+      - name: Push Helm chart using Helm CLI directly
+        run: |
+          # Enable OCI support
+          export HELM_EXPERIMENTAL_OCI=1
           
-          # Try to push this chart first as initialization
-          echo "Initializing repository with empty chart"
+          # Login to Docker Hub with Helm
           echo "${{ secrets.DOCKERHUB_TOKEN }}" | helm registry login -u ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin registry-1.docker.io
-          if helm push empty-chart/temp-chart-0.1.0.tgz ${HELM_REGISTRY}/${HELM_REPO_NAME}; then
-            echo "Repository initialized via Helm"
-          else 
-            echo "Repository initialization failed, but continuing with main chart push"
-          fi
-
-      - name: Log in to Docker Hub OCI registry (for Helm)
-        run: |
-          # Refreshing login credentials
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | helm registry login -u ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin registry-1.docker.io
-          echo "Login succeeded"
-
-      - name: Push Helm chart to OCI registry
-        run: |
-          echo "Pushing Helm chart with chartVersion: ${{ needs.extract-versions.outputs.chart_version }}"
           
-          # Use verbose logging to help troubleshoot
-          helm version
-          echo "Using chart file: ${CHART_FILE}"
-          ls -la ${CHART_FILE}
+          # Push chart
+          CHART_FILE=$(find ./dist -name "*.tgz")
+          echo "Pushing chart: ${CHART_FILE}"
+          helm push ${CHART_FILE} oci://registry-1.docker.io/quixanalytics/quix-environment-operator-helm
           
-          # Set debug mode for more information
-          export HELM_DEBUG=1
-          
-          # Push to the repository (without force flag as it's not supported)
-          helm push ${CHART_FILE} ${HELM_REGISTRY}/${HELM_REPO_NAME}
-          
-          echo "Helm chart pushed successfully"
-          echo "To pull this chart use:"
-          echo "helm pull oci://registry-1.docker.io/${HELM_REPO_NAME} --version ${{ needs.extract-versions.outputs.chart_version }}"
+          echo "Chart pushed. To use: helm pull oci://registry-1.docker.io/quixanalytics/quix-environment-operator-helm --version ${{ needs.extract-versions.outputs.chart_version }}"
