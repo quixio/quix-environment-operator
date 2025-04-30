@@ -20,7 +20,6 @@ jobs:
       app_version: ${{ steps.original_versions.outputs.APP_VERSION }}
       chart_version: ${{ steps.original_versions.outputs.CHART_VERSION }}
       pr_number: ${{ steps.pr_info.outputs.PR_NUMBER }}
-      unique_tag: ${{ steps.tag_info.outputs.UNIQUE_TAG }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -43,18 +42,6 @@ jobs:
           else
             echo "PR_NUMBER=0" >> $GITHUB_OUTPUT
           fi
-      
-      - name: Create unique tag
-        id: tag_info
-        run: |
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            UNIQUE_TAG="pr-${{ github.event.pull_request.number }}"
-          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            UNIQUE_TAG="latest"
-          else
-            UNIQUE_TAG="dev-$(echo ${{ github.sha }} | cut -c1-7)"
-          fi
-          echo "UNIQUE_TAG=$UNIQUE_TAG" >> $GITHUB_OUTPUT
           
       - name: Set development versions for non-main branch
         if: github.ref != 'refs/heads/main'
@@ -104,20 +91,12 @@ jobs:
 
       - name: Push Docker image
         run: |
-          # Always push with version tag
+          # Push with version tag
           export IMG="${REGISTRY}/${IMAGE_NAME}:${{ needs.extract-versions.outputs.app_version }}"
           make docker-push
           
-          # Also push with unique tag (PR number or 'latest')
-          UNIQUE_TAG="${{ needs.extract-versions.outputs.unique_tag }}"
-          
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            # For PRs: push with PR number tag
-            echo "Pushing PR-specific tag: pr-${{ needs.extract-versions.outputs.pr_number }}"
-            docker tag ${IMG} ${REGISTRY}/${IMAGE_NAME}:${UNIQUE_TAG}
-            docker push ${REGISTRY}/${IMAGE_NAME}:${UNIQUE_TAG}
-          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            # For main: push latest tag
+          # For main branch, also tag as latest
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
             echo "Pushing latest tag"
             docker tag ${IMG} ${REGISTRY}/${IMAGE_NAME}:latest
             docker push ${REGISTRY}/${IMAGE_NAME}:latest
@@ -166,31 +145,5 @@ jobs:
           # Push with version tag - this is supported in all Helm versions with OCI
           echo "Pushing Helm chart with version tag: ${{ needs.extract-versions.outputs.chart_version }}"
           helm push ${CHART_FILE} ${{ env.HELM_REGISTRY }}
-          
-          # For PR or main specific tags, we'll use a workaround
-          # Since "helm chart save/push" commands may not be available in all Helm versions
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            # For PRs: create a copy with PR-specific name and push that
-            echo "Pushing PR-specific Helm chart tag: pr-${{ needs.extract-versions.outputs.pr_number }}"
-            PR_TAG="pr-${{ needs.extract-versions.outputs.pr_number }}"
-            # Modify the Chart.yaml to set the version to the PR tag temporarily
-            cp -r helm/quix-environment-operator helm/quix-environment-operator-pr
-            sed -i "s/^version:.*/version: ${PR_TAG}/" helm/quix-environment-operator-pr/Chart.yaml
-            
-            # Package and push the PR-specific chart
-            helm package helm/quix-environment-operator-pr
-            helm push quix-environment-operator-${PR_TAG}.tgz ${{ env.HELM_REGISTRY }}
-            
-          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            # For main: create a copy with 'latest' version and push that
-            echo "Pushing latest Helm chart tag"
-            # Modify the Chart.yaml to set the version to 'latest' temporarily
-            cp -r helm/quix-environment-operator helm/quix-environment-operator-latest
-            sed -i "s/^version:.*/version: latest/" helm/quix-environment-operator-latest/Chart.yaml
-            
-            # Package and push the latest chart
-            helm package helm/quix-environment-operator-latest
-            helm push quix-environment-operator-latest.tgz ${{ env.HELM_REGISTRY }}
-          fi
           
           echo "Helm chart pushed successfully"
