@@ -166,7 +166,7 @@ jobs:
           echo "${{ secrets.DOCKERHUB_TOKEN }}" | helm registry login -u ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin registry-1.docker.io
 
       - name: Push Helm chart to OCI registry
-        uses: bsord/helm-push@4.1.0
+        uses: bsord/helm-push@v4.2.0
         with:
           useOCIRegistry: true
           registry-url: oci://registry-1.docker.io/quixanalytics/quix-environment-operator-helm
@@ -175,4 +175,4 @@ jobs:
           force: true
           chart-folder: helm/quix-environment-operator
           update-dependencies: true
-#trigger
+#trigger 2
