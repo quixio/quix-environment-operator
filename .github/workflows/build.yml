@@ -197,14 +197,34 @@ jobs:
               echo "Fixing URLs in existing index.yaml"
               # Replace GitHub releases URLs with GitHub Pages URLs
               sed -i 's|https://github.com/quixio/quix-environment-operator/releases/download/|https://quixio.github.io/quix-environment-operator/|g' index.yaml
-              git add index.yaml
-              git commit -m "Fix chart URLs in index.yaml [skip ci]"
-              git push origin gh-pages
-              echo "Fixed index.yaml URLs"
+              
+              # Only commit if there were changes
+              if git diff --quiet index.yaml; then
+                echo "No changes needed to index.yaml"
+              else
+                git add index.yaml
+                git commit -m "Fix chart URLs in index.yaml [skip ci]"
+                git push origin gh-pages
+                echo "Fixed index.yaml URLs"
+              fi
             fi
             
-            # Return to the original branch - use explicit branch name instead of github.ref_name
-            git checkout $(git branch -r | grep -v gh-pages | grep origin/main || echo "origin/main" | sed 's/origin\///')
+            # Remember original branch/ref
+            GITHUB_REF_NAME="${GITHUB_REF_NAME:-main}"
+            echo "Attempting to return to branch: ${GITHUB_REF_NAME}"
+            
+            # Try different branches in order
+            if git fetch origin ${GITHUB_REF_NAME} && git checkout ${GITHUB_REF_NAME}; then
+              echo "Returned to ${GITHUB_REF_NAME} branch"
+            elif git fetch origin main && git checkout main; then
+              echo "Returned to main branch"
+            else
+              # As a last resort, get the default branch from the remote
+              DEFAULT_BRANCH=$(git remote show origin | grep 'HEAD branch' | cut -d ' ' -f5)
+              git fetch origin ${DEFAULT_BRANCH}
+              git checkout ${DEFAULT_BRANCH}
+              echo "Returned to ${DEFAULT_BRANCH} branch"
+            fi
           fi
 
       - name: Create config file
@@ -235,11 +255,33 @@ jobs:
         run: |
           echo "Chart-releaser action failed, using manual approach"
           
+          # Make sure we're not on gh-pages branch
+          if [[ $(git branch --show-current) == "gh-pages" ]]; then
+            echo "Currently on gh-pages branch, switching back to source branch"
+            
+            # Remember original branch/ref
+            GITHUB_REF_NAME="${GITHUB_REF_NAME:-main}"
+            echo "Attempting to return to branch: ${GITHUB_REF_NAME}"
+            
+            # Try different branches in order
+            if git fetch origin ${GITHUB_REF_NAME} && git checkout ${GITHUB_REF_NAME}; then
+              echo "Returned to ${GITHUB_REF_NAME} branch"
+            elif git fetch origin main && git checkout main; then
+              echo "Returned to main branch"
+            else
+              # As a last resort, get the default branch from the remote
+              DEFAULT_BRANCH=$(git remote show origin | grep 'HEAD branch' | cut -d ' ' -f5)
+              git fetch origin ${DEFAULT_BRANCH}
+              git checkout ${DEFAULT_BRANCH}
+              echo "Returned to ${DEFAULT_BRANCH} branch"
+            fi
+          fi
+          
           # Save the source branch name
           SOURCE_BRANCH=$(git branch --show-current)
           echo "Current branch: ${SOURCE_BRANCH}"
           
-          # Package the chart while still on source branch
+          # Package the chart while on source branch
           mkdir -p .cr-release-packages
           
           # Make sure charts dir exists and package before switching branch
