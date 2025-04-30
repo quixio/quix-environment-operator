@@ -121,9 +121,6 @@ jobs:
   build-and-push-helm:
     needs: extract-versions
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -133,48 +130,29 @@ jobs:
         with:
           version: 'latest'
 
-      - name: Enable OCI support for Helm
+      - name: Configure Helm
         run: |
           echo "Enabling experimental OCI support for Helm"
-          export HELM_EXPERIMENTAL_OCI=1
           echo "HELM_EXPERIMENTAL_OCI=1" >> $GITHUB_ENV
 
-      - name: Display Helm chart version
-        run: |
-          echo "Building Helm chart with chartVersion: ${{ needs.extract-versions.outputs.chart_version }}"
-          echo "Helm chart will be versioned as: quix-environment-operator-${{ needs.extract-versions.outputs.chart_version }}.tgz"
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: registry-1.docker.io
 
-      - name: Package and lint Helm chart
+      - name: Package Helm chart
         run: |
-          make helm-lint
-          make helm-package
-          echo "Helm chart packaged successfully"
-          
-          # Show the generated package location
-          find . -name "*.tgz" | sort
-      
-      - name: Log in to Docker Hub OCI registry and push Helm chart
-        run: |
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | helm registry login -u ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin registry-1.docker.io
-          
-          # Correctly locate the packaged helm chart
-          CHART_FILE=$(find ./helm -name "quix-environment-operator-${{ needs.extract-versions.outputs.chart_version }}.tgz")
-          echo "Found chart at: ${CHART_FILE}"
-          
-          # Create the repository if it doesn't exist (this is a no-op if it already exists)
-          # This addresses the "insufficient_scope: authorization failed" error which often
-          # occurs when the repository doesn't exist yet in Docker Hub or when the scope
-          # is not properly set up for the token
-          docker pull busybox:latest || true
-          docker tag busybox:latest ${REGISTRY}/${HELM_REPO_NAME}:init || true
-          docker push ${REGISTRY}/${HELM_REPO_NAME}:init || true
-          
-          # Push with version tag
-          echo "Pushing Helm chart with chartVersion: ${{ needs.extract-versions.outputs.chart_version }}"
-          helm push ${CHART_FILE} ${HELM_REGISTRY}/${HELM_REPO_NAME}
-          
-          # Print pull command for verification
-          echo "To pull this chart use:"
-          echo "helm pull oci://registry-1.docker.io/${HELM_REPO_NAME} --version ${{ needs.extract-versions.outputs.chart_version }}"
-          
-          echo "Helm chart pushed successfully"
+          helm package ./helm/quix-environment-operator -d ./dist
+          echo "CHART_PATH=./dist/quix-environment-operator-${{ needs.extract-versions.outputs.chart_version }}.tgz" >> $GITHUB_ENV
+
+      - name: Push Helm chart to OCI registry
+        uses: redhat-actions/push-to-registry@v2
+        with:
+          image: quixanalytics/quix-environment-operator-helm
+          registry: registry-1.docker.io
+          tags: ${{ needs.extract-versions.outputs.chart_version }}
+          extra-args: |
+            --oci
+            --from-file=${{ env.CHART_PATH }}
