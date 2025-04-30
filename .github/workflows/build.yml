@@ -13,6 +13,7 @@ env:
   # Modified registry URL format to avoid "insufficient_scope: authorization failed" error
   # Using a simpler URL structure separates the registry from the repository path
   HELM_REGISTRY: oci://registry-1.docker.io
+  # Use original repo name since we've changed the chart name in Chart.yaml
   HELM_REPO_NAME: quixanalytics/quix-environment-operator-helm
 
 jobs:
@@ -121,70 +122,43 @@ jobs:
   build-and-push-helm:
     needs: extract-versions
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Needed for creating releases
+      pages: write     # Needed for GitHub Pages
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Required for chart-releaser to find chart changes
+
+      - name: Configure Git
+        run: |
+          git config user.name "${{ github.actor }}"
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
 
       - name: Set up Helm
         uses: azure/setup-helm@v3
         with:
           version: 'latest'
 
-      - name: Configure Helm and package chart
+      - name: Add dependency repositories
         run: |
-          echo "Enabling experimental OCI support for Helm"
-          export HELM_EXPERIMENTAL_OCI=1
-          echo "HELM_EXPERIMENTAL_OCI=1" >> $GITHUB_ENV
-          
-          # Package the Helm chart
-          mkdir -p ./dist
-          cd helm
-          helm package quix-environment-operator -d ../dist
-          cd ..
-          echo "Packaged Helm chart successfully"
-          CHART_FILE=$(find ./dist -name "quix-environment-operator-${{ needs.extract-versions.outputs.chart_version }}.tgz")
-          echo "Found chart at: ${CHART_FILE}"
-          echo "CHART_FILE=${CHART_FILE}" >> $GITHUB_ENV
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo update
 
-      - name: Create repo if it doesn't exist
+      - name: Update chart version
         run: |
-          # Create an empty OCI Helm chart repository
-          mkdir -p empty-chart
-          cd empty-chart
-          helm create temp-chart
-          helm package temp-chart
-          cd ..
-          
-          # Try to push this chart first as initialization
-          echo "Initializing repository with empty chart"
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | helm registry login -u ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin registry-1.docker.io
-          if helm push empty-chart/temp-chart-0.1.0.tgz ${HELM_REGISTRY}/${HELM_REPO_NAME}; then
-            echo "Repository initialized via Helm"
-          else 
-            echo "Repository initialization failed, but continuing with main chart push"
-          fi
+          # Update Chart.yaml with the version from earlier steps
+          sed -i "s/^version:.*/version: ${{ needs.extract-versions.outputs.chart_version }}/" helm/quix-environment-operator/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"${{ needs.extract-versions.outputs.app_version }}\"/" helm/quix-environment-operator/Chart.yaml
+          echo "Updated chart version to ${{ needs.extract-versions.outputs.chart_version }}"
+          cat helm/quix-environment-operator/Chart.yaml
 
-      - name: Log in to Docker Hub OCI registry (for Helm)
-        run: |
-          # Refreshing login credentials
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | helm registry login -u ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin registry-1.docker.io
-          echo "Login succeeded"
-
-      - name: Push Helm chart to OCI registry
-        run: |
-          echo "Pushing Helm chart with chartVersion: ${{ needs.extract-versions.outputs.chart_version }}"
-          
-          # Use verbose logging to help troubleshoot
-          helm version
-          echo "Using chart file: ${CHART_FILE}"
-          ls -la ${CHART_FILE}
-          
-          # Set debug mode for more information
-          export HELM_DEBUG=1
-          
-          # Push to the repository (without force flag as it's not supported)
-          helm push ${CHART_FILE} ${HELM_REGISTRY}/${HELM_REPO_NAME}
-          
-          echo "Helm chart pushed successfully"
-          echo "To pull this chart use:"
-          echo "helm pull oci://registry-1.docker.io/${HELM_REPO_NAME} --version ${{ needs.extract-versions.outputs.chart_version }}"
+      - name: Run chart-releaser
+        uses: helm/chart-releaser-action@v1.7.0
+        with:
+          charts_dir: helm
+          config: cr.yaml
+        env:
+          CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CR_SKIP_EXISTING: true
