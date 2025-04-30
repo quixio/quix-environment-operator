@@ -33,6 +33,7 @@ jobs:
           echo "CHART_VERSION=$CHART_VERSION" >> $GITHUB_ENV
           echo "APP_VERSION=$APP_VERSION" >> $GITHUB_OUTPUT
           echo "CHART_VERSION=$CHART_VERSION" >> $GITHUB_OUTPUT
+          echo "Extracted appVersion: $APP_VERSION (for Docker) and chartVersion: $CHART_VERSION (for Helm)"
       
       - name: Get PR info
         id: pr_info
@@ -50,6 +51,8 @@ jobs:
           echo "Using development version: $DEV_VERSION"
           echo "APP_VERSION=$DEV_VERSION" >> $GITHUB_ENV
           echo "CHART_VERSION=$DEV_VERSION" >> $GITHUB_ENV
+          echo "APP_VERSION=$DEV_VERSION" >> $GITHUB_OUTPUT
+          echo "CHART_VERSION=$DEV_VERSION" >> $GITHUB_OUTPUT
           
           # Update Chart.yaml with development versions
           sed -i "s/^version:.*/version: $DEV_VERSION/" helm/quix-environment-operator/Chart.yaml
@@ -58,6 +61,7 @@ jobs:
           # Show modified Chart.yaml for verification
           echo "Modified Chart.yaml:"
           cat helm/quix-environment-operator/Chart.yaml
+          echo "Updated to use development version $DEV_VERSION for both appVersion and chartVersion"
 
   build-test-push-docker:
     needs: extract-versions
@@ -72,11 +76,17 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Display Docker image version
+        run: |
+          echo "Building Docker image with appVersion: ${{ needs.extract-versions.outputs.app_version }}"
+          echo "Docker image will be tagged as: ${REGISTRY}/${IMAGE_NAME}:${{ needs.extract-versions.outputs.app_version }}"
+
       - name: Build Docker image
         run: |
+          # Use appVersion for Docker image
           export IMG="${REGISTRY}/${IMAGE_NAME}:${{ needs.extract-versions.outputs.app_version }}"
           make docker-build
-          echo "Docker image built successfully"
+          echo "Docker image built successfully with tag: $IMG"
       
       - name: Run tests in Docker
         run: |
@@ -91,15 +101,17 @@ jobs:
 
       - name: Push Docker image
         run: |
-          # Push with version tag
+          # Push with appVersion tag
           export IMG="${REGISTRY}/${IMAGE_NAME}:${{ needs.extract-versions.outputs.app_version }}"
           make docker-push
+          echo "Pushed Docker image with appVersion tag: $IMG"
           
           # For main branch, also tag as latest
           if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            echo "Pushing latest tag"
+            echo "Pushing latest tag for Docker image"
             docker tag ${IMG} ${REGISTRY}/${IMAGE_NAME}:latest
             docker push ${REGISTRY}/${IMAGE_NAME}:latest
+            echo "Pushed Docker image with latest tag"
           fi
           
           echo "Docker image pushed successfully"
@@ -125,6 +137,11 @@ jobs:
           export HELM_EXPERIMENTAL_OCI=1
           echo "HELM_EXPERIMENTAL_OCI=1" >> $GITHUB_ENV
 
+      - name: Display Helm chart version
+        run: |
+          echo "Building Helm chart with chartVersion: ${{ needs.extract-versions.outputs.chart_version }}"
+          echo "Helm chart will be versioned as: quix-environment-operator-${{ needs.extract-versions.outputs.chart_version }}.tgz"
+
       - name: Package and lint Helm chart
         run: |
           make helm-lint
@@ -143,7 +160,7 @@ jobs:
           echo "Found chart at: ${CHART_FILE}"
           
           # Push with version tag - use the correct repository name
-          echo "Pushing Helm chart with version tag: ${{ needs.extract-versions.outputs.chart_version }}"
+          echo "Pushing Helm chart with chartVersion: ${{ needs.extract-versions.outputs.chart_version }}"
           helm push ${CHART_FILE} ${HELM_REGISTRY}/${HELM_REPO_NAME}
           
           # Print pull command for verification
