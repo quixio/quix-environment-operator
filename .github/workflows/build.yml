@@ -140,6 +140,12 @@ jobs:
         with:
           version: 'latest'
 
+      - name: Enable OCI support for Helm
+        run: |
+          echo "Enabling experimental OCI support for Helm"
+          export HELM_EXPERIMENTAL_OCI=1
+          echo "HELM_EXPERIMENTAL_OCI=1" >> $GITHUB_ENV
+
       - name: Package and lint Helm chart
         run: |
           make helm-lint
@@ -157,24 +163,34 @@ jobs:
           CHART_FILE=$(find ./helm -name "quix-environment-operator-${{ needs.extract-versions.outputs.chart_version }}.tgz")
           echo "Found chart at: ${CHART_FILE}"
           
-          # Always push with version tag
+          # Push with version tag - this is supported in all Helm versions with OCI
+          echo "Pushing Helm chart with version tag: ${{ needs.extract-versions.outputs.chart_version }}"
           helm push ${CHART_FILE} ${{ env.HELM_REGISTRY }}
           
-          # Also push with unique tag (PR number or 'latest')
-          UNIQUE_TAG="${{ needs.extract-versions.outputs.unique_tag }}"
-          
+          # For PR or main specific tags, we'll use a workaround
+          # Since "helm chart save/push" commands may not be available in all Helm versions
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            # For PRs: tag with PR number
-            echo "Pushing PR-specific Helm chart tag: ${UNIQUE_TAG}"
-            CHART_REF="${HELM_REGISTRY}/${HELM_REPO_NAME}:${UNIQUE_TAG}"
-            helm chart save ${CHART_FILE} ${CHART_REF}
-            helm chart push ${CHART_REF}
+            # For PRs: create a copy with PR-specific name and push that
+            echo "Pushing PR-specific Helm chart tag: pr-${{ needs.extract-versions.outputs.pr_number }}"
+            PR_TAG="pr-${{ needs.extract-versions.outputs.pr_number }}"
+            # Modify the Chart.yaml to set the version to the PR tag temporarily
+            cp -r helm/quix-environment-operator helm/quix-environment-operator-pr
+            sed -i "s/^version:.*/version: ${PR_TAG}/" helm/quix-environment-operator-pr/Chart.yaml
+            
+            # Package and push the PR-specific chart
+            helm package helm/quix-environment-operator-pr
+            helm push quix-environment-operator-${PR_TAG}.tgz ${{ env.HELM_REGISTRY }}
+            
           elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            # For main: tag as latest
+            # For main: create a copy with 'latest' version and push that
             echo "Pushing latest Helm chart tag"
-            LATEST_REF="${HELM_REGISTRY}/${HELM_REPO_NAME}:latest"
-            helm chart save ${CHART_FILE} ${LATEST_REF}
-            helm chart push ${LATEST_REF}
+            # Modify the Chart.yaml to set the version to 'latest' temporarily
+            cp -r helm/quix-environment-operator helm/quix-environment-operator-latest
+            sed -i "s/^version:.*/version: latest/" helm/quix-environment-operator-latest/Chart.yaml
+            
+            # Package and push the latest chart
+            helm package helm/quix-environment-operator-latest
+            helm push quix-environment-operator-latest.tgz ${{ env.HELM_REGISTRY }}
           fi
           
           echo "Helm chart pushed successfully"
