@@ -136,6 +136,21 @@ jobs:
           git config user.name "${{ github.actor }}"
           git config user.email "${{ github.actor }}@users.noreply.github.com"
 
+      - name: Create gh-pages branch if needed
+        run: |
+          # Check if gh-pages branch exists
+          if ! git ls-remote --heads origin gh-pages | grep -q 'gh-pages'; then
+            echo "Creating gh-pages branch"
+            git checkout --orphan gh-pages
+            git reset --hard
+            git commit --allow-empty -m "Initialize gh-pages branch"
+            git push origin gh-pages
+            git checkout -
+            echo "Created gh-pages branch successfully"
+          else
+            echo "gh-pages branch already exists"
+          fi
+
       - name: Set up Helm
         uses: azure/setup-helm@v3
         with:
@@ -143,38 +158,20 @@ jobs:
 
       - name: Add dependency repositories
         run: |
-          # Package the Helm chart
-          mkdir -p ./dist
-          helm package ./helm/quix-environment-operator -d ./dist
-          echo "Packaged Helm chart successfully"
-          ls -la ./dist/
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo update
 
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Create Docker repository first using plain Docker
+      - name: Update chart version
         run: |
-          # Create a minimal Docker image to establish the repository
-          echo "FROM scratch" > Dockerfile.empty
-          echo "LABEL org.opencontainers.image.description=\"Helm chart repository\"" >> Dockerfile.empty
-          docker build -t quixanalytics/quix-environment-operator-helm:init -f Dockerfile.empty .
-          docker push quixanalytics/quix-environment-operator-helm:init
-          echo "Repository established via Docker"
+          # Update Chart.yaml with the version from earlier steps
+          sed -i "s/^version:.*/version: ${{ needs.extract-versions.outputs.chart_version }}/" helm/quix-environment-operator/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"${{ needs.extract-versions.outputs.app_version }}\"/" helm/quix-environment-operator/Chart.yaml
+          echo "Updated chart version to ${{ needs.extract-versions.outputs.chart_version }}"
+          cat helm/quix-environment-operator/Chart.yaml
 
-      - name: Push Helm chart using Helm CLI directly
-        run: |
-          # Enable OCI support
-          export HELM_EXPERIMENTAL_OCI=1
-          
-          # Login to Docker Hub with Helm
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | helm registry login -u ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin registry-1.docker.io
-          
-          # Push chart
-          CHART_FILE=$(find ./dist -name "*.tgz")
-          echo "Pushing chart: ${CHART_FILE}"
-          helm push ${CHART_FILE} oci://registry-1.docker.io/quixanalytics/quix-environment-operator-helm
-          
-          echo "Chart pushed. To use: helm pull oci://registry-1.docker.io/quixanalytics/quix-environment-operator-helm --version ${{ needs.extract-versions.outputs.chart_version }}"
+      - name: Run chart-releaser
+        uses: helm/chart-releaser-action@v1.7.0
+        env:
+          CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CR_SKIP_EXISTING: "true"
+          CR_PAGES_BRANCH: "gh-pages"
