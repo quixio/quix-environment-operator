@@ -45,10 +45,25 @@ const (
 	EnvironmentPhaseDeleting EnvironmentPhase = "Deleting"
 )
 
-// ResourcePhase represents the lifecycle phase of a managed sub-resource
-type ResourcePhase struct {
-	Phase   string `json:"phase,omitempty"`
-	Message string `json:"message,omitempty"`
+// ResourceStatusPhase represents the current phase of a managed sub-resource
+// +kubebuilder:validation:Enum=Creating;Active;Failed;Deleting
+type ResourceStatusPhase string
+
+const (
+	// ResourceStatusPhaseCreating indicates the resource is being created
+	ResourceStatusPhaseCreating ResourceStatusPhase = "Creating"
+	// ResourceStatusPhaseActive indicates the resource is active
+	ResourceStatusPhaseActive ResourceStatusPhase = "Active"
+	// ResourceStatusPhaseFailed indicates the resource creation failed
+	ResourceStatusPhaseFailed ResourceStatusPhase = "Failed"
+	// ResourceStatusPhaseDeleting indicates the resource is being deleted
+	ResourceStatusPhaseDeleting ResourceStatusPhase = "Deleting"
+)
+
+// ResourceStatus represents the lifecycle status of a managed sub-resource
+type ResourceStatus struct {
+	Phase   ResourceStatusPhase `json:"phase,omitempty"`
+	Message string              `json:"message,omitempty"`
 }
 
 // EnvironmentStatus defines the observed state of Environment
@@ -69,13 +84,13 @@ type EnvironmentStatus struct {
 	// +optional
 	LastUpdated metav1.Time `json:"lastUpdated,omitempty"`
 
-	// NamespacePhase indicates the current state of the managed namespace
+	// NamespaceStatus indicates the current state of the managed namespace
 	// +optional
-	NamespacePhase *ResourcePhase `json:"namespacePhase,omitempty"`
+	NamespaceStatus *ResourceStatus `json:"namespaceStatus,omitempty"`
 
-	// RoleBindingPhase indicates the current state of the managed role binding
+	// RoleBindingStatus indicates the current state of the managed role binding
 	// +optional
-	RoleBindingPhase *ResourcePhase `json:"roleBindingPhase,omitempty"`
+	RoleBindingStatus *ResourceStatus `json:"roleBindingStatus,omitempty"`
 }
 
 // +kubebuilder:object:root=true

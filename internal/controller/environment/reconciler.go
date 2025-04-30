@@ -110,22 +110,65 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		if errors.IsNotFound(err) {
 			// Create namespace if it doesn't exist
 			logger.V(0).Info("creating namespace for environment", "environment", environment.Name)
+
+			// Update status to show namespace creation is in progress, only if not already set
+			if environment.Status.NamespaceStatus == nil || environment.Status.NamespaceStatus.Phase == "" {
+				initResourceStatus(&environment.Status.NamespaceStatus, v1.ResourceStatusPhaseCreating, "Creating namespace for environment")
+				if err := r.environmentManager.UpdateStatus(ctx, environment); err != nil {
+					logger.Error(err, "Failed to update namespace status")
+				}
+			}
+
 			_, err := r.namespaceManager.Reconcile(ctx, environment)
 			if err != nil {
 				r.recorder.Event(environment, corev1.EventTypeWarning, "NamespaceCreationFailed", "Failed to create namespace")
 				logger.Error(err, "error creating namespace", "environment", environment.Name)
+
+				// Update namespace status to Failed, but only if not already set to Failed
+				if environment.Status.NamespaceStatus != nil {
+					updateResourceStatusIfNotFailed(environment.Status.NamespaceStatus, v1.ResourceStatusPhaseFailed,
+						fmt.Sprintf("Failed to create namespace: %v", err))
+					_ = r.environmentManager.UpdateStatus(ctx, environment)
+				}
+
 				// Update environment status to Failed
 				_ = r.updateStatus(ctx, environment, v1.EnvironmentPhaseFailed, fmt.Sprintf("Failed to create namespace: %v", err))
 				return ctrl.Result{}, err
 			}
+
+			// Update namespace status to Active if current status is Creating
+			if environment.Status.NamespaceStatus != nil {
+				updateResourceStatusIfCreating(environment.Status.NamespaceStatus, v1.ResourceStatusPhaseActive, "Namespace created successfully")
+				_ = r.environmentManager.UpdateStatus(ctx, environment)
+			}
+
 			r.recorder.Event(environment, corev1.EventTypeNormal, "NamespaceCreated", "Created namespace for environment")
+
+			// Update RoleBinding status to Creating if not already set
+			if environment.Status.RoleBindingStatus == nil || environment.Status.RoleBindingStatus.Phase == "" {
+				initResourceStatus(&environment.Status.RoleBindingStatus, v1.ResourceStatusPhaseCreating, "Creating role binding")
+				_ = r.environmentManager.UpdateStatus(ctx, environment)
+			}
 
 			// Create RoleBinding for the environment
 			if _, err := r.roleBindingManager.Reconcile(ctx, environment); err != nil {
 				r.recorder.Event(environment, corev1.EventTypeWarning, "RoleBindingCreationFailed", "Failed to create role binding")
 
+				// Update RoleBinding status to Failed if not already set
+				if environment.Status.RoleBindingStatus != nil {
+					updateResourceStatusIfNotFailed(environment.Status.RoleBindingStatus, v1.ResourceStatusPhaseFailed,
+						fmt.Sprintf("Failed to create role binding: %v", err))
+					_ = r.environmentManager.UpdateStatus(ctx, environment)
+				}
+
 				_ = r.updateStatus(ctx, environment, v1.EnvironmentPhaseFailed, fmt.Sprintf("Failed to create role binding: %v", err))
 				return ctrl.Result{}, fmt.Errorf("error creating role binding: %w", err)
+			}
+
+			// Update RoleBinding status to Active if current status is Creating
+			if environment.Status.RoleBindingStatus != nil {
+				updateResourceStatusIfCreating(environment.Status.RoleBindingStatus, v1.ResourceStatusPhaseActive, "Role binding created successfully")
+				_ = r.environmentManager.UpdateStatus(ctx, environment)
 			}
 
 			r.recorder.Event(environment, corev1.EventTypeNormal, "RoleBindingCreated", "Created role binding for environment")
@@ -139,6 +182,13 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	_, err = r.namespaceManager.Reconcile(ctx, environment)
 	if err != nil {
 		r.recorder.Event(environment, corev1.EventTypeWarning, "NamespaceReconciliationFailed", "Failed to reconcile namespace")
+
+		// Update namespace status to Failed, but only if not already Failed
+		if environment.Status.NamespaceStatus != nil {
+			updateResourceStatusIfNotFailed(environment.Status.NamespaceStatus, v1.ResourceStatusPhaseFailed,
+				fmt.Sprintf("Failed to reconcile namespace: %v", err))
+			_ = r.environmentManager.UpdateStatus(ctx, environment)
+		}
 
 		// Update environment status to Failed if namespace cannot be reconciled
 		if strings.Contains(err.Error(), "not managed by this operator") ||
@@ -157,6 +207,13 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	_, err = r.roleBindingManager.Reconcile(ctx, environment)
 	if err != nil {
 		r.recorder.Event(environment, corev1.EventTypeWarning, "RoleBindingReconciliationFailed", "Failed to reconcile role binding")
+
+		// Update RoleBinding status to Failed, but only if not already Failed
+		if environment.Status.RoleBindingStatus != nil {
+			updateResourceStatusIfNotFailed(environment.Status.RoleBindingStatus, v1.ResourceStatusPhaseFailed,
+				fmt.Sprintf("Failed to reconcile role binding: %v", err))
+			_ = r.environmentManager.UpdateStatus(ctx, environment)
+		}
 
 		// If this is a security validation error, mark the environment as Failed
 		if strings.Contains(err.Error(), "security violation") {
@@ -219,11 +276,31 @@ func (r *EnvironmentReconciler) handleDeletion(ctx context.Context, env *v1.Envi
 					r.recorder.Event(env, corev1.EventTypeWarning, "NamespaceNotManaged",
 						fmt.Sprintf("Namespace %s is not managed by this operator and was not deleted", namespaceName))
 
+					// Update status to reflect unmanaged namespace, but only if current phase isn't already Failed
+					if env.Status.NamespaceStatus != nil {
+						updateResourceStatusIfNotFailed(env.Status.NamespaceStatus, v1.ResourceStatusPhaseFailed,
+							fmt.Sprintf("Namespace %s is not managed by this operator", namespaceName))
+
+						if updateErr := r.environmentManager.UpdateStatus(ctx, env); updateErr != nil {
+							logger.Error(updateErr, "Failed to update namespace status")
+						}
+					}
+
 					// For unmanaged namespaces, skip waiting and proceed to finalizer removal
 					skipWaiting = true
 				} else {
 					// For other errors, retry
 					return ctrl.Result{Requeue: true}, fmt.Errorf("failed to delete namespace: %w", err)
+				}
+			} else {
+				// Successfully initiated namespace deletion, only update if not already in a special state
+				if env.Status.NamespaceStatus != nil {
+					updateResourceStatusIfNotSpecial(env.Status.NamespaceStatus, v1.ResourceStatusPhaseDeleting,
+						fmt.Sprintf("Deleting namespace %s", namespaceName))
+
+					if updateErr := r.environmentManager.UpdateStatus(ctx, env); updateErr != nil {
+						logger.Error(updateErr, "Failed to update namespace status")
+					}
 				}
 			}
 		}
@@ -262,15 +339,46 @@ func (r *EnvironmentReconciler) updateStatus(ctx context.Context, env *v1.Enviro
 			env.Status.ObservedGeneration = env.Generation
 		}
 
-		// Add/update namespace phase if applicable
-		if phase == v1.EnvironmentPhaseInProgress && env.Status.NamespacePhase == nil {
-			env.Status.NamespacePhase = &v1.ResourcePhase{
-				Phase:   "Creating",
-				Message: "Namespace is being provisioned",
+		// Initialize sub-resource statuses if they don't exist
+		if env.Status.NamespaceStatus == nil {
+			env.Status.NamespaceStatus = &v1.ResourceStatus{}
+		}
+
+		if env.Status.RoleBindingStatus == nil {
+			env.Status.RoleBindingStatus = &v1.ResourceStatus{}
+		}
+
+		// Only update sub-resource statuses when:
+		// 1. They haven't been set yet (empty phase)
+		// 2. Current phase is lower priority than new phase (Creating -> Active -> Deleting)
+		// 3. Environment phase indicates failure
+
+		// Update namespace status based on environment phase
+		switch phase {
+		case v1.EnvironmentPhaseInProgress:
+			// Only set Creating if status hasn't been set yet
+			updateResourceStatusIfEmpty(env.Status.NamespaceStatus, v1.ResourceStatusPhaseCreating, "Namespace is being provisioned")
+			updateResourceStatusIfEmpty(env.Status.RoleBindingStatus, v1.ResourceStatusPhaseCreating, "RoleBinding will be created after namespace")
+
+		case v1.EnvironmentPhaseReady:
+			// Only upgrade to Active if current phase is Creating
+			updateResourceStatusIfCreating(env.Status.NamespaceStatus, v1.ResourceStatusPhaseActive, "Namespace is active")
+			updateResourceStatusIfCreating(env.Status.RoleBindingStatus, v1.ResourceStatusPhaseActive, "RoleBinding is active")
+
+		case v1.EnvironmentPhaseFailed:
+			// Only update to Failed if the message indicates a resource-specific failure
+			if strings.Contains(message, "namespace") || strings.Contains(message, "Namespace") {
+				updateResourceStatusIfNotFailed(env.Status.NamespaceStatus, v1.ResourceStatusPhaseFailed, "Namespace creation or reconciliation failed")
 			}
-		} else if phase == v1.EnvironmentPhaseReady && env.Status.NamespacePhase != nil {
-			env.Status.NamespacePhase.Phase = "Active"
-			env.Status.NamespacePhase.Message = "Namespace is active"
+
+			if strings.Contains(message, "role binding") || strings.Contains(message, "Role binding") {
+				updateResourceStatusIfNotFailed(env.Status.RoleBindingStatus, v1.ResourceStatusPhaseFailed, "RoleBinding creation or reconciliation failed")
+			}
+
+		case v1.EnvironmentPhaseDeleting:
+			// Only update if not already failed or deleting
+			updateResourceStatusIfNotSpecial(env.Status.NamespaceStatus, v1.ResourceStatusPhaseDeleting, "Namespace is being deleted")
+			updateResourceStatusIfNotSpecial(env.Status.RoleBindingStatus, v1.ResourceStatusPhaseDeleting, "RoleBinding will be deleted with namespace")
 		}
 
 		// Use environment manager to update status
@@ -278,6 +386,47 @@ func (r *EnvironmentReconciler) updateStatus(ctx context.Context, env *v1.Enviro
 	}
 
 	return nil
+}
+
+// updateResourceStatusIfEmpty updates a resource status if its phase is empty
+func updateResourceStatusIfEmpty(status *v1.ResourceStatus, phase v1.ResourceStatusPhase, message string) {
+	if status.Phase == "" {
+		status.Phase = phase
+		status.Message = message
+	}
+}
+
+// updateResourceStatusIfCreating updates a resource status if its phase is Creating
+func updateResourceStatusIfCreating(status *v1.ResourceStatus, phase v1.ResourceStatusPhase, message string) {
+	if status.Phase == v1.ResourceStatusPhaseCreating {
+		status.Phase = phase
+		status.Message = message
+	}
+}
+
+// updateResourceStatusIfNotFailed updates a resource status if its phase is not Failed
+func updateResourceStatusIfNotFailed(status *v1.ResourceStatus, phase v1.ResourceStatusPhase, message string) {
+	if status.Phase != v1.ResourceStatusPhaseFailed {
+		status.Phase = phase
+		status.Message = message
+	}
+}
+
+// updateResourceStatusIfNotSpecial updates a resource status if it's not in a special state (Failed or Deleting)
+func updateResourceStatusIfNotSpecial(status *v1.ResourceStatus, phase v1.ResourceStatusPhase, message string) {
+	if status.Phase != v1.ResourceStatusPhaseFailed && status.Phase != v1.ResourceStatusPhaseDeleting {
+		status.Phase = phase
+		status.Message = message
+	}
+}
+
+// initResourceStatus initializes a resource status if it's nil or updates it if it has an empty phase
+func initResourceStatus(statusPtr **v1.ResourceStatus, phase v1.ResourceStatusPhase, message string) {
+	if *statusPtr == nil {
+		*statusPtr = &v1.ResourceStatus{}
+	}
+	(*statusPtr).Phase = phase
+	(*statusPtr).Message = message
 }
 
 // SetupWithManager sets up the controller with the Manager
