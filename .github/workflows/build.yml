@@ -72,11 +72,12 @@ jobs:
           echo "Modified Chart.yaml:"
           cat helm/quix-environment-operator/Chart.yaml
 
-  build-and-test:
+  build-test-push-docker:
     needs: extract-versions
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -94,37 +95,7 @@ jobs:
         run: |
           make docker-test
           echo "All tests passed successfully"
-
-  build-helm:
-    needs: extract-versions
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Helm
-        uses: azure/setup-helm@v3
-        with:
-          version: 'latest'
-
-      - name: Package and lint Helm chart
-        run: |
-          make helm-lint
-          make helm-package
-          echo "Helm chart packaged successfully"
-
-  push-docker:
-    needs: [extract-versions, build-and-test]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
+      
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
@@ -154,8 +125,8 @@ jobs:
           
           echo "Docker image pushed successfully"
 
-  push-helm:
-    needs: [extract-versions, build-helm]
+  build-and-push-helm:
+    needs: extract-versions
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -169,12 +140,25 @@ jobs:
         with:
           version: 'latest'
 
-      - name: Push Helm chart to OCI registry
+      - name: Package and lint Helm chart
+        run: |
+          make helm-lint
+          make helm-package
+          echo "Helm chart packaged successfully"
+          
+          # Show the generated package location
+          find . -name "*.tgz" | sort
+      
+      - name: Log in to Docker Hub OCI registry and push Helm chart
         run: |
           echo "${{ secrets.DOCKERHUB_TOKEN }}" | helm registry login -u ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin registry-1.docker.io
           
+          # Correctly locate the packaged helm chart
+          CHART_FILE=$(find ./helm -name "quix-environment-operator-${{ needs.extract-versions.outputs.chart_version }}.tgz")
+          echo "Found chart at: ${CHART_FILE}"
+          
           # Always push with version tag
-          helm push ./deploy/quix-environment-operator-${{ needs.extract-versions.outputs.chart_version }}.tgz ${{ env.HELM_REGISTRY }}
+          helm push ${CHART_FILE} ${{ env.HELM_REGISTRY }}
           
           # Also push with unique tag (PR number or 'latest')
           UNIQUE_TAG="${{ needs.extract-versions.outputs.unique_tag }}"
@@ -183,13 +167,13 @@ jobs:
             # For PRs: tag with PR number
             echo "Pushing PR-specific Helm chart tag: ${UNIQUE_TAG}"
             CHART_REF="${HELM_REGISTRY}/${HELM_REPO_NAME}:${UNIQUE_TAG}"
-            helm chart save ./deploy/quix-environment-operator-${{ needs.extract-versions.outputs.chart_version }}.tgz ${CHART_REF}
+            helm chart save ${CHART_FILE} ${CHART_REF}
             helm chart push ${CHART_REF}
           elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
             # For main: tag as latest
             echo "Pushing latest Helm chart tag"
             LATEST_REF="${HELM_REGISTRY}/${HELM_REPO_NAME}:latest"
-            helm chart save ./deploy/quix-environment-operator-${{ needs.extract-versions.outputs.chart_version }}.tgz ${LATEST_REF}
+            helm chart save ${CHART_FILE} ${LATEST_REF}
             helm chart push ${LATEST_REF}
           fi
           
