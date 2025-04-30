@@ -6,6 +6,7 @@ package environment
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -132,6 +133,21 @@ var _ = Describe("Environment controller integration tests", func() {
 					GinkgoWriter.Printf("Environment %s phase: %s\n", envName, createdEnv.Status.Phase)
 					return createdEnv.Status.Phase
 				}, timeout, interval).Should(Equal(quixiov1.EnvironmentPhaseReady))
+
+				// Verify ResourceName fields are set
+				Expect(createdEnv.Status.NamespaceStatus).ToNot(BeNil())
+				Expect(createdEnv.Status.RoleBindingStatus).ToNot(BeNil())
+
+				// Extract environment ID from resource name (format is "{id}-resource-name")
+				envId := strings.TrimSuffix(envName, "-resource-name")
+
+				// Verify namespace name is correctly set
+				expectedNsName := fmt.Sprintf("%s%s", envId, Config.NamespaceSuffix)
+				Expect(createdEnv.Status.NamespaceStatus.ResourceName).To(Equal(expectedNsName))
+
+				// Verify role binding name is correctly set
+				expectedRbName := fmt.Sprintf("%s-quix-crb", envId)
+				Expect(createdEnv.Status.RoleBindingStatus.ResourceName).To(Equal(expectedRbName))
 			}
 
 			// Clean up
@@ -283,6 +299,10 @@ var _ = Describe("Environment controller integration tests", func() {
 				}
 				return createdEnv.Status.Message
 			}, timeout, interval).Should(ContainSubstring("not managed by this operator"), "Environment should have error message about namespace conflict")
+
+			// For failed environments with namespace conflicts, the namespace ResourceName should still be set
+			Expect(createdEnv.Status.NamespaceStatus).ToNot(BeNil())
+			Expect(createdEnv.Status.NamespaceStatus.ResourceName).To(Equal(nsName))
 
 			// Check the pre-existing namespace to see if it was affected
 			existingNs := &corev1.Namespace{}
@@ -805,6 +825,14 @@ var _ = Describe("Environment controller integration tests", func() {
 				return err == nil
 			}, timeout, interval).Should(BeTrue(), "Namespace was not created")
 
+			// Verify ResourceName fields are properly set
+			updatedEnv := &quixiov1.Environment{}
+			Expect(k8sClient.Get(ctx, envLookupKey, updatedEnv)).Should(Succeed())
+			Expect(updatedEnv.Status.NamespaceStatus).ToNot(BeNil())
+			Expect(updatedEnv.Status.NamespaceStatus.ResourceName).To(Equal(nsName))
+			Expect(updatedEnv.Status.RoleBindingStatus).ToNot(BeNil())
+			Expect(updatedEnv.Status.RoleBindingStatus.ResourceName).To(Equal(fmt.Sprintf("%s-quix-crb", "test-events")))
+
 			// Delete the environment
 			Expect(k8sClient.Delete(ctx, env)).Should(Succeed())
 
@@ -880,6 +908,14 @@ var _ = Describe("Environment controller integration tests", func() {
 			Expect(rb.Labels["quix.io/environment-id"]).To(Equal(env.Spec.Id), "Environment ID label is incorrect")
 			Expect(rb.Labels["quix.io/managed-by"]).To(Equal("environment-operator"), "Managed-by label is incorrect")
 			Expect(rb.Labels["quix.io/environment-name"]).To(Equal(env.Name), "Environment name label is incorrect")
+
+			// Verify ResourceName fields are properly set in the Environment status
+			updatedEnv := &quixiov1.Environment{}
+			Expect(k8sClient.Get(ctx, envLookupKey, updatedEnv)).Should(Succeed())
+			Expect(updatedEnv.Status.NamespaceStatus).ToNot(BeNil())
+			Expect(updatedEnv.Status.NamespaceStatus.ResourceName).To(Equal(nsName))
+			Expect(updatedEnv.Status.RoleBindingStatus).ToNot(BeNil())
+			Expect(updatedEnv.Status.RoleBindingStatus.ResourceName).To(Equal(roleBindingName))
 
 			// Clean up
 			Expect(k8sClient.Delete(ctx, env)).Should(Succeed())
@@ -973,6 +1009,191 @@ var _ = Describe("Environment controller integration tests", func() {
 				nsGetErr := k8sClient.Get(ctx, nsLookupKey, existingNs)
 				return IsNamespaceDeleted(existingNs, nsGetErr)
 			}, deletionTimeout, interval).Should(BeTrue(), "Pre-existing namespace was not deleted during cleanup")
+		})
+
+		It("Should use the stored namespace name during deletion when suffix changes", func() {
+			ctx := context.Background()
+
+			// Create a test environment
+			env := createIntegrationTestEnvironment("test-ns-suffix", nil, nil)
+			Expect(k8sClient.Create(ctx, env)).Should(Succeed())
+
+			// Original namespace name with current suffix
+			originalNsName := fmt.Sprintf("%s%s", "test-ns-suffix", Config.NamespaceSuffix)
+			nsLookupKey := types.NamespacedName{Name: originalNsName}
+
+			// Wait for namespace to be created
+			createdNs := &corev1.Namespace{}
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, nsLookupKey, createdNs)
+				return err == nil
+			}, timeout, interval).Should(BeTrue(), "Namespace was not created")
+
+			// Wait for environment to be Ready
+			envLookupKey := types.NamespacedName{
+				Name:      env.Name,
+				Namespace: testNamespace,
+			}
+			Eventually(func() quixiov1.EnvironmentPhase {
+				createdEnv := &quixiov1.Environment{}
+				if err := k8sClient.Get(ctx, envLookupKey, createdEnv); err != nil {
+					return ""
+				}
+				return createdEnv.Status.Phase
+			}, timeout, interval).Should(Equal(quixiov1.EnvironmentPhaseReady))
+
+			// Verify ResourceName is properly set in status
+			createdEnv := &quixiov1.Environment{}
+			Expect(k8sClient.Get(ctx, envLookupKey, createdEnv)).Should(Succeed())
+			Expect(createdEnv.Status.NamespaceStatus).ToNot(BeNil())
+			Expect(createdEnv.Status.NamespaceStatus.ResourceName).To(Equal(originalNsName))
+
+			// Save original namespace suffix for restoration
+			originalSuffix := Config.NamespaceSuffix
+			defer func() {
+				Config.NamespaceSuffix = originalSuffix
+			}()
+
+			// Change the namespace suffix - this would cause the namespace name calculation to be different
+			Config.NamespaceSuffix = "-different-suffix"
+
+			// If operator recalculates namespace name, it would use this, which doesn't exist
+			wrongNsName := fmt.Sprintf("%s%s", "test-ns-suffix", Config.NamespaceSuffix)
+			wrongNsLookupKey := types.NamespacedName{Name: wrongNsName}
+
+			// Verify the wrong namespace doesn't exist
+			wrongNs := &corev1.Namespace{}
+			err := k8sClient.Get(ctx, wrongNsLookupKey, wrongNs)
+			Expect(errors.IsNotFound(err)).To(BeTrue(), "The wrong namespace shouldn't exist")
+
+			// Delete the environment
+			Expect(k8sClient.Delete(ctx, createdEnv)).Should(Succeed())
+
+			// Verify environment transitions to Deleting state
+			Eventually(func() quixiov1.EnvironmentPhase {
+				updatedEnv := &quixiov1.Environment{}
+				if err := k8sClient.Get(ctx, envLookupKey, updatedEnv); err != nil {
+					if errors.IsNotFound(err) {
+						// Environment was fully deleted
+						return quixiov1.EnvironmentPhaseDeleting
+					}
+					return ""
+				}
+				return updatedEnv.Status.Phase
+			}, timeout, interval).Should(Equal(quixiov1.EnvironmentPhaseDeleting))
+
+			// The operator should delete the original namespace (using the stored name)
+			// not the one that would be calculated with the new suffix
+			Eventually(func() bool {
+				nsGetErr := k8sClient.Get(ctx, nsLookupKey, createdNs)
+				return IsNamespaceDeleted(createdNs, nsGetErr)
+			}, deletionTimeout, interval).Should(BeTrue(), "Original namespace should be deleted")
+
+			// The wrong namespace should remain non-existent (it was never created)
+			err = k8sClient.Get(ctx, wrongNsLookupKey, wrongNs)
+			Expect(errors.IsNotFound(err)).To(BeTrue(), "The wrong namespace should still not exist")
+		})
+
+		It("Should use the stored role binding name during deletion", func() {
+			ctx := context.Background()
+
+			// Create a test environment
+			env := createIntegrationTestEnvironment("test-rb-name", nil, nil)
+			Expect(k8sClient.Create(ctx, env)).Should(Succeed())
+
+			// Get expected namespace and role binding names
+			nsName := fmt.Sprintf("%s%s", "test-rb-name", Config.NamespaceSuffix)
+			nsLookupKey := types.NamespacedName{Name: nsName}
+			originalRbName := fmt.Sprintf("%s-quix-crb", "test-rb-name")
+			rbLookupKey := types.NamespacedName{
+				Name:      originalRbName,
+				Namespace: nsName,
+			}
+
+			// Wait for namespace and role binding to be created
+			createdNs := &corev1.Namespace{}
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, nsLookupKey, createdNs)
+				return err == nil
+			}, timeout, interval).Should(BeTrue(), "Namespace was not created")
+
+			rb := &rbacv1.RoleBinding{}
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, rbLookupKey, rb)
+				return err == nil
+			}, timeout, interval).Should(BeTrue(), "RoleBinding was not created")
+
+			// Wait for environment to be Ready
+			envLookupKey := types.NamespacedName{
+				Name:      env.Name,
+				Namespace: testNamespace,
+			}
+			createdEnv := &quixiov1.Environment{}
+			Eventually(func() quixiov1.EnvironmentPhase {
+				if err := k8sClient.Get(ctx, envLookupKey, createdEnv); err != nil {
+					return ""
+				}
+				return createdEnv.Status.Phase
+			}, timeout, interval).Should(Equal(quixiov1.EnvironmentPhaseReady))
+
+			// Verify ResourceName is properly set in status
+			Expect(createdEnv.Status.RoleBindingStatus).ToNot(BeNil())
+			Expect(createdEnv.Status.RoleBindingStatus.ResourceName).To(Equal(originalRbName))
+
+			// First, create a custom role binding - must do this before updating env status
+			customRbName := "custom-rb-name"
+			customRbLookupKey := types.NamespacedName{
+				Name:      customRbName,
+				Namespace: nsName,
+			}
+			customRb := &rbacv1.RoleBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      customRbName,
+					Namespace: nsName,
+					Labels: map[string]string{
+						"quix.io/environment-id":   "test-rb-name",
+						"quix.io/managed-by":       "environment-operator",
+						"quix.io/environment-name": createdEnv.Name,
+					},
+				},
+				RoleRef: rbacv1.RoleRef{
+					APIGroup: "rbac.authorization.k8s.io",
+					Kind:     "ClusterRole",
+					Name:     Config.ClusterRoleName,
+				},
+				Subjects: []rbacv1.Subject{
+					{
+						Kind:      "ServiceAccount",
+						Name:      Config.ServiceAccountName,
+						Namespace: Config.ServiceAccountNamespace,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, customRb)).Should(Succeed())
+
+			// Delete the original role binding
+			Expect(k8sClient.Delete(ctx, rb)).Should(Succeed())
+
+			// Now update the environment status to point to the custom role binding
+			updatedEnv := createdEnv.DeepCopy()
+			updatedEnv.Status.RoleBindingStatus.ResourceName = customRbName
+			Expect(k8sClient.Status().Update(ctx, updatedEnv)).Should(Succeed())
+
+			// Delete the environment
+			Expect(k8sClient.Delete(ctx, updatedEnv)).Should(Succeed())
+
+			// The key expectation: the custom role binding should be deleted
+			// (showing that the operator is using the stored name, not recalculating it)
+			Eventually(func() bool {
+				customRbErr := k8sClient.Get(ctx, customRbLookupKey, &rbacv1.RoleBinding{})
+				return errors.IsNotFound(customRbErr)
+			}, timeout, interval).Should(BeTrue(), "Custom role binding should be deleted")
+
+			// Verify namespace deletion is initiated
+			Eventually(func() bool {
+				nsGetErr := k8sClient.Get(ctx, nsLookupKey, createdNs)
+				return IsNamespaceDeleted(createdNs, nsGetErr)
+			}, deletionTimeout, interval).Should(BeTrue(), "Namespace deletion should be initiated")
 		})
 	})
 

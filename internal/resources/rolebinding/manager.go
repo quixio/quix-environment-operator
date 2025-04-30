@@ -38,7 +38,17 @@ func NewManager(client client.Client, config config.ConfigProvider, logger logr.
 
 // GetName returns the name of the role binding for the environment
 func (m *DefaultManager) GetName(env *v1.Environment) string {
-	return fmt.Sprintf("%s-quix-crb", env.Spec.Id)
+	// Use stored role binding name if available
+	if env.Status.RoleBindingStatus != nil && env.Status.RoleBindingStatus.ResourceName != "" {
+		return env.Status.RoleBindingStatus.ResourceName
+	}
+
+	// Otherwise use the default naming convention
+	if env.Status.RoleBindingStatus == nil {
+		env.Status.RoleBindingStatus = &v1.ResourceStatus{}
+	}
+	env.Status.RoleBindingStatus.ResourceName = fmt.Sprintf("%s-quix-crb", env.Spec.Id)
+	return env.Status.RoleBindingStatus.ResourceName
 }
 
 // Exists checks if a role binding exists
@@ -139,6 +149,13 @@ func (m *DefaultManager) Reconcile(ctx context.Context, env *v1.Environment) (*r
 		m.logger.V(0).Info("Creating role binding", "name", rbName, "namespace", namespace)
 		err = m.client.Create(ctx, roleBinding)
 		if err != nil {
+			// If the role binding already exists, try to get it and return it instead of failing
+			if errors.IsAlreadyExists(err) {
+				getErr := m.client.Get(ctx, types.NamespacedName{Name: rbName, Namespace: namespace}, roleBinding)
+				if getErr == nil {
+					return roleBinding, nil
+				}
+			}
 			return nil, fmt.Errorf("failed to create role binding: %w", err)
 		}
 	} else {

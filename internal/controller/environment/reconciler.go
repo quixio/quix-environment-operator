@@ -124,6 +124,9 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				r.recorder.Event(environment, corev1.EventTypeWarning, "NamespaceCreationFailed", "Failed to create namespace")
 				logger.Error(err, "error creating namespace", "environment", environment.Name)
 
+				// This should cause the namespace to be set in environment status
+				_ = r.namespaceManager.GetNamespaceName(environment)
+
 				// Update namespace status to Failed, but only if not already set to Failed
 				if environment.Status.NamespaceStatus != nil {
 					updateResourceStatusIfNotFailed(environment.Status.NamespaceStatus, v1.ResourceStatusPhaseFailed,
@@ -139,6 +142,10 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			// Update namespace status to Active if current status is Creating
 			if environment.Status.NamespaceStatus != nil {
 				updateResourceStatusIfCreating(environment.Status.NamespaceStatus, v1.ResourceStatusPhaseActive, "Namespace created successfully")
+
+				// Set the namespace name on the NamespaceStatus resource if not already set
+				_ = r.namespaceManager.GetNamespaceName(environment)
+
 				_ = r.environmentManager.UpdateStatus(ctx, environment)
 			}
 
@@ -168,6 +175,10 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			// Update RoleBinding status to Active if current status is Creating
 			if environment.Status.RoleBindingStatus != nil {
 				updateResourceStatusIfCreating(environment.Status.RoleBindingStatus, v1.ResourceStatusPhaseActive, "Role binding created successfully")
+
+				// Set the role binding name on the RoleBindingStatus resource if not already set
+				_ = r.roleBindingManager.GetName(environment)
+
 				_ = r.environmentManager.UpdateStatus(ctx, environment)
 			}
 
@@ -182,6 +193,9 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	_, err = r.namespaceManager.Reconcile(ctx, environment)
 	if err != nil {
 		r.recorder.Event(environment, corev1.EventTypeWarning, "NamespaceReconciliationFailed", "Failed to reconcile namespace")
+
+		// This should cause the namespace to be set in environment status
+		_ = r.namespaceManager.GetNamespaceName(environment)
 
 		// Update namespace status to Failed, but only if not already Failed
 		if environment.Status.NamespaceStatus != nil {
@@ -201,6 +215,15 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 
 		return ctrl.Result{}, fmt.Errorf("error reconciling namespace: %w", err)
+	}
+
+	// Set or update Namespace resource name if needed
+	if environment.Status.NamespaceStatus != nil && environment.Status.NamespaceStatus.ResourceName == "" {
+		// This should cause the namespace to be set in environment status
+		_ = r.namespaceManager.GetNamespaceName(environment)
+		if err := r.environmentManager.UpdateStatus(ctx, environment); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	// Reconcile the role binding - this handles creation or updates as needed
@@ -228,6 +251,15 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, fmt.Errorf("error reconciling role binding: %w", err)
 	}
 
+	// Set or update RoleBinding resource name if needed
+	if environment.Status.RoleBindingStatus != nil && environment.Status.RoleBindingStatus.ResourceName == "" {
+		// This should cause the role binding name to be set in environment status
+		_ = r.roleBindingManager.GetName(environment)
+		if err := r.environmentManager.UpdateStatus(ctx, environment); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
 	// Update environment status if needed
 	if environment.Status.Phase != v1.EnvironmentPhaseReady {
 		if err := r.updateStatus(ctx, environment, v1.EnvironmentPhaseReady, "Environment is ready"); err != nil {
@@ -252,8 +284,14 @@ func (r *EnvironmentReconciler) handleDeletion(ctx context.Context, env *v1.Envi
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// Get namespace name using the namespace manager
-	namespaceName := r.namespaceManager.GetNamespaceName(env)
+	// First, try to delete the role binding as it depends on the namespace
+	// This is a no-op if the role binding doesn't exist anymore
+	if err := r.roleBindingManager.Delete(ctx, env); err != nil {
+		logger.Error(err, "Failed to delete role binding")
+		// Log error but continue to namespace deletion
+	}
+
+	var namespaceName string = r.namespaceManager.GetNamespaceName(env)
 	skipWaiting := false
 
 	// Check if namespace still exists
