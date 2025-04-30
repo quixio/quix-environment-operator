@@ -130,10 +130,21 @@ jobs:
         with:
           version: 'latest'
 
-      - name: Configure Helm
+      - name: Configure Helm and package chart
         run: |
           echo "Enabling experimental OCI support for Helm"
+          export HELM_EXPERIMENTAL_OCI=1
           echo "HELM_EXPERIMENTAL_OCI=1" >> $GITHUB_ENV
+          
+          # Package the Helm chart
+          mkdir -p ./dist
+          cd helm
+          helm package quix-environment-operator -d ../dist
+          cd ..
+          echo "Packaged Helm chart successfully"
+          CHART_FILE=$(find ./dist -name "quix-environment-operator-${{ needs.extract-versions.outputs.chart_version }}.tgz")
+          echo "Found chart at: ${CHART_FILE}"
+          echo "CHART_FILE=${CHART_FILE}" >> $GITHUB_ENV
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
@@ -142,17 +153,26 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           registry: registry-1.docker.io
 
-      - name: Package Helm chart
+      - name: Create repo if it doesn't exist
         run: |
-          helm package ./helm/quix-environment-operator -d ./dist
-          echo "CHART_PATH=./dist/quix-environment-operator-${{ needs.extract-versions.outputs.chart_version }}.tgz" >> $GITHUB_ENV
+          # Pull, tag, and push a small image to ensure repository exists
+          docker pull busybox:latest
+          docker tag busybox:latest ${REGISTRY}/${HELM_REPO_NAME}:init
+          docker push ${REGISTRY}/${HELM_REPO_NAME}:init
+          echo "Repository initialized: ${REGISTRY}/${HELM_REPO_NAME}"
+
+      - name: Log in to Docker Hub OCI registry (for Helm)
+        run: |
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | helm registry login -u ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin registry-1.docker.io
 
       - name: Push Helm chart to OCI registry
-        uses: redhat-actions/push-to-registry@v2
+        uses: bsord/helm-push@4.2.0
         with:
-          image: quixanalytics/quix-environment-operator-helm
-          registry: registry-1.docker.io
-          tags: ${{ needs.extract-versions.outputs.chart_version }}
-          extra-args: |
-            --oci
-            --from-file=${{ env.CHART_PATH }}
+          useOCIRegistry: true
+          registry-url: oci://registry-1.docker.io/quixanalytics/quix-environment-operator-helm
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          access-token: ${{ secrets.DOCKERHUB_TOKEN }}
+          force: true
+          chart-folder: helm/quix-environment-operator
+          update-dependencies: true
+#trigger
