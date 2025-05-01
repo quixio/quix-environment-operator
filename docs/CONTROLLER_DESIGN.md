@@ -29,10 +29,12 @@
         *   **Define Target `ClusterRole` (External):** Use a pre-existing `ClusterRole` defined cluster-wide (configured via `CLUSTER_ROLE_NAME` environment variable, defaults to `quix-platform-account-role`). This `ClusterRole` must grant necessary permissions but *only* for resources typically managed *within* a namespace.
             *   **Security Validation:** Perform security validation of ClusterRole to prevent privilege escalation.
             *   **CRITICAL: ClusterRole MUST AVOID (Strict Privilege Escalation Prevention):** The target `ClusterRole` must NOT grant permissions for cluster-scoped resources or RBAC management.
+            *  See role implementation [here](../deploy/quix-environment-operator/templates/platform-cluster-role.yaml).
         *   **Define `RoleBinding`:**
             *   **Name:** Generate name using the pattern `<environment-id>-quix-crb`.
             *   **Subject:** Bind the `ClusterRole` to the Quix Platform `ServiceAccount` configured via environment variables (`SERVICE_ACCOUNT_NAME` and `SERVICE_ACCOUNT_NAMESPACE`).
             *   **RoleRef:** Reference the configured `ClusterRole` (Kind: `ClusterRole`, Name: from config).
+
         *   **Create `RoleBinding`:** Create the `RoleBinding` inside the managed namespace. This binding confines the `ClusterRole`'s permissions to this namespace only.
         *   **Labeling:** Apply standard labels including `quix.io/environment-id`, `quix.io/managed-by`, and `quix.io/environment-name`.
         *   **Idempotency:** Ensure `RoleBinding` creation/update logic is idempotent.
@@ -54,6 +56,7 @@
         *   **Additional Security Layer:** We implement a dedicated validation system that checks ClusterRoles for potentially dangerous permissions before binding them.
         *   **Security Verification:** Before creating any RoleBinding, the operator validates that the target ClusterRole doesn't include permissions for creating or modifying role bindings, which would allow privilege escalation.
         *   **Failure Handling:** If security validation fails, the Environment reconciliation immediately transitions to a Failed state with a clear security violation message, preventing the creation of potentially insecure resources.
+        *  See role implementation [here](../deploy/quix-environment-operator/templates/operator-cluster-role.yaml).
 
 5.  **Status Reporting & Events**
     *   **Detailed Status Tracking:**
