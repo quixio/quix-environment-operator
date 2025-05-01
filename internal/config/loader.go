@@ -30,9 +30,9 @@ func (l *EnvConfigLoader) LoadConfig() (*OperatorConfig, error) {
 	return &OperatorConfig{
 		NamespaceSuffix:         getEnvOrDefault("NAMESPACE_SUFFIX", "-qenv"),
 		EnvironmentRegex:        getEnvOrDefault("ENVIRONMENT_REGEX", ""),
-		ServiceAccountName:      getEnvOrDefault("SERVICE_ACCOUNT_NAME", "quix-environment-user"),
+		ServiceAccountName:      getEnvOrDefault("SERVICE_ACCOUNT_NAME", "quix-platform-account"),
 		ServiceAccountNamespace: getEnvOrDefault("SERVICE_ACCOUNT_NAMESPACE", "quix-environment"),
-		ClusterRoleName:         getEnvOrDefault("CLUSTER_ROLE_NAME", "quix-environment-user-role"),
+		ClusterRoleName:         getEnvOrDefault("CLUSTER_ROLE_NAME", "quix-platform-account-role"),
 		ReconcileInterval:       time.Duration(reconcileInterval) * time.Second,
 		MaxConcurrentReconciles: maxConcurrentReconciles,
 		CacheSyncPeriod:         cacheSyncPeriod,

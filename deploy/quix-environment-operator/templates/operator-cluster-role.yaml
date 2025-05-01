@@ -36,7 +36,7 @@ rules:
   verbs: ["create", "patch"]
 
 # The following rules are required for the operator only to be able to grant them to the service account at namespace level
-# see /deploy/quix-environment-operator/templates/user-cluster-role.yaml
+# see /deploy/quix-environment-operator/templates/platform-cluster-role.yaml
 # Allow management of core resources
 - apiGroups: [""]
   resources: ["configmaps", "persistentvolumeclaims", "pods", "secrets", "serviceaccounts", "services"]
