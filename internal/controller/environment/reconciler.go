@@ -21,6 +21,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 )
 
 const (
@@ -469,8 +470,25 @@ func initResourceStatus(statusPtr **v1.ResourceStatus, phase v1.ResourceStatusPh
 
 // SetupWithManager sets up the controller with the Manager
 func (r *EnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Trigger reconciliation for all environments on startup
-	go r.ReconcileAllEnvironments(context.Background())
+	// Setup a channel to indicate when the cache is started
+	startedCh := make(chan struct{})
+
+	// Add an event handler for when the cache starts
+	if err := mgr.Add(
+		manager.RunnableFunc(func(ctx context.Context) error {
+			<-mgr.Elected()
+			close(startedCh)
+			return nil
+		}),
+	); err != nil {
+		return err
+	}
+
+	// Trigger reconciliation for all environments after cache has started
+	go func() {
+		<-startedCh
+		r.ReconcileAllEnvironments(context.Background())
+	}()
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1.Environment{}).

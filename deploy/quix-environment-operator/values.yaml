@@ -48,7 +48,6 @@ env:
   
   # ServiceAccount for RoleBindings
   serviceAccountName: "quix-environment-user"
-  serviceAccountNamespace: "quix-system"
   
   # ClusterRole for RoleBindings
   clusterRoleName: "quix-environment-user" 

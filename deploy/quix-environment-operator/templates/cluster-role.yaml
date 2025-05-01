@@ -20,12 +20,40 @@ rules:
 # Allows the controller to create and manage namespaces for environments
 - apiGroups: [""]
   resources: ["namespaces"]
-  verbs: ["get", "create", "delete"]
+  verbs: ["get", "create", "delete", "watch"]
 # Enables the controller to manage role bindings for environment access control
 - apiGroups: ["rbac.authorization.k8s.io"]
   resources: ["rolebindings"]
-  verbs: ["get", "create", "delete"]
+  verbs: ["get", "list", "create", "delete", "watch"]
+# Allows access to ClusterRoles for informer caching
+# Note: This ClusterRole must be bound to the service account at namespace level using RoleBinding
+- apiGroups: ["rbac.authorization.k8s.io"]
+  resources: ["clusterroles"]
+  verbs: ["get", "list", "watch"]
 # Allows the controller to emit events for observability and troubleshooting
 - apiGroups: [""]
   resources: ["events"]
-  verbs: ["create", "patch"] 
+  verbs: ["create", "patch"]
+
+# The following rules are required for the operator only to be able to grant them to the service account at namespace level
+# see /deploy/quix-environment-operator/templates/user-cluster-role.yaml
+# Allow management of core resources
+- apiGroups: [""]
+  resources: ["configmaps", "persistentvolumeclaims", "pods", "secrets", "serviceaccounts", "services"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# Special pod-related permissions
+- apiGroups: [""]
+  resources: ["pods/exec", "pods/log"]
+  verbs: ["get", "list", "create"]
+# App deployment resources
+- apiGroups: ["apps"]
+  resources: ["daemonsets", "deployments", "replicasets", "statefulsets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# Batch job resources
+- apiGroups: ["batch"]
+  resources: ["cronjobs", "jobs"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# Networking resources
+- apiGroups: ["networking.k8s.io"]
+  resources: ["ingresses", "networkpolicies"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"] 

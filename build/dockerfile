@@ -28,7 +28,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 make build
 
 # Runtime stage (minimal container)
 FROM gcr.io/distroless/static:nonroot
-WORKDIR /
+WORKDIR /bin
 COPY --from=builder /workspace/bin/operator .
 USER nonroot:nonroot
 
