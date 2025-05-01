@@ -50,4 +50,8 @@ env:
   serviceAccountName: "quix-environment-user"
   
   # ClusterRole for RoleBindings
-  clusterRoleName: "quix-environment-user" 
+  clusterRoleName: "quix-environment-user"
+  
+  # Cache sync period for informers (how often controller checks for changes)
+  cacheSyncPeriod: "10m"
+  

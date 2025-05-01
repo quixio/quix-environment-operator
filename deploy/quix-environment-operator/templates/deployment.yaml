@@ -43,6 +43,8 @@ spec:
               value: {{ .Release.Namespace | quote }}
             - name: CLUSTER_ROLE_NAME
               value: {{ .Values.env.clusterRoleName | quote }}
+            - name: CACHE_SYNC_PERIOD
+              value: {{ .Values.env.cacheSyncPeriod | quote }}
           ports:
             - name: metrics
               containerPort: 8080

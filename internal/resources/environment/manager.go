@@ -13,25 +13,40 @@ import (
 
 // DefaultManager implements the Manager interface
 type DefaultManager struct {
-	client client.Client
-	logger logr.Logger
+	client    client.Client
+	apiReader client.Reader
+	logger    logr.Logger
 }
 
 // NewManager creates a new instance of the DefaultManager
-func NewManager(client client.Client) *DefaultManager {
+func NewManager(client client.Client, apiReader client.Reader) *DefaultManager {
 	return &DefaultManager{
-		client: client,
-		logger: log.Log.WithName("environment-manager"),
+		client:    client,
+		apiReader: apiReader,
+		logger:    log.Log.WithName("environment-manager"),
 	}
 }
 
-// Get retrieves an environment by name and namespace
-func (m *DefaultManager) Get(ctx context.Context, name string, namespace string) (*v1.Environment, error) {
+// Get retrieves an environment by name
+func (m *DefaultManager) Get(ctx context.Context, name string) (*v1.Environment, error) {
 	env := &v1.Environment{}
-	err := m.client.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, env)
-	if err != nil {
-		return nil, err
+	key := types.NamespacedName{Name: name}
+
+	// For cluster-scoped resources, always use empty namespace
+	err := m.client.Get(ctx, key, env)
+	if err == nil {
+		return env, nil
 	}
+
+	// If that fails, log a debug message and try a direct API call
+	m.logger.V(1).Info("Failed to get environment with empty namespace, attempting fallback",
+		"name", name, "error", err)
+
+	/// Use direct API call (bypasses cache)
+	if err := m.apiReader.Get(ctx, key, env); err != nil {
+		return nil, fmt.Errorf("failed to get Environment %q: %w", name, err)
+	}
+
 	return env, nil
 }
 

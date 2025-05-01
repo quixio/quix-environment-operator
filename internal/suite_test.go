@@ -175,7 +175,7 @@ var _ = BeforeSuite(func() {
 
 	// Create required manager for the controller
 	client := k8sManager.GetClient()
-	envManager := environment.NewManager(client)
+	envManager := environment.NewManager(client, client)
 
 	// Create a namespace manager
 	nsManager := namespace.NewManager(

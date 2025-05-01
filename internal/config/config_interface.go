@@ -1,5 +1,9 @@
 package config
 
+import (
+	"time"
+)
+
 // ConfigLoader defines methods for loading operator configuration
 type ConfigLoader interface {
 	// LoadConfig loads the operator configuration from the environment or other sources
@@ -25,4 +29,7 @@ type ConfigProvider interface {
 
 	// GetReconcileInterval returns the reconcile interval duration
 	GetReconcileInterval() int64
+
+	// GetCacheSyncPeriod returns the cache sync period duration
+	GetCacheSyncPeriod() time.Duration
 }
