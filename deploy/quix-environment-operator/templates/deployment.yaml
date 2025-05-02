@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ include "quix-environment-operator.fullname" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "quix-environment-operator.labels" . | nindent 4 }}
 spec:
@@ -39,9 +40,11 @@ spec:
             - name: SERVICE_ACCOUNT_NAME
               value: {{ .Values.env.serviceAccountName | quote }}
             - name: SERVICE_ACCOUNT_NAMESPACE
-              value: {{ .Values.env.serviceAccountNamespace | quote }}
+              value: {{ .Release.Namespace | quote }}
             - name: CLUSTER_ROLE_NAME
               value: {{ .Values.env.clusterRoleName | quote }}
+            - name: CACHE_SYNC_PERIOD
+              value: {{ .Values.env.cacheSyncPeriod | quote }}
           ports:
             - name: metrics
               containerPort: 8080

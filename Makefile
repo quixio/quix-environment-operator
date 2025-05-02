@@ -196,7 +196,7 @@ deploy: manifests ## Deploy controller to the K8s cluster specified in ~/.kube/c
 		fi; \
 	fi
 	helm upgrade --install quix-environment-operator ./deploy/quix-environment-operator \
-		--create-namespace --namespace quix-environment \
+		--namespace quix-operator --create-namespace \
 		--set image.repository=$(shell echo ${IMG} | cut -d: -f1) \
 		--set image.tag=$(shell echo ${IMG} | cut -d: -f2)
 
@@ -210,7 +210,7 @@ undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/confi
 			exit 1; \
 		fi; \
 	fi
-	helm uninstall quix-environment-operator -n quix-environment
+	helm uninstall quix-environment-operator -n quix-operator
 
 .PHONY: helm-package
 helm-package: ## Package the Helm chart.

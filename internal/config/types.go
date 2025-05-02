@@ -24,6 +24,9 @@ type OperatorConfig struct {
 
 	// MaxConcurrentReconciles is the maximum number of concurrent reconciliations
 	MaxConcurrentReconciles int `validate:"min=1,max=100"`
+
+	// CacheSyncPeriod is the duration between cache syncs
+	CacheSyncPeriod time.Duration `validate:"min=1m"`
 }
 
 // Ensure OperatorConfig implements ConfigProvider
@@ -49,4 +52,8 @@ func (c *OperatorConfig) GetClusterRoleName() string {
 
 func (c *OperatorConfig) GetReconcileInterval() int64 {
 	return int64(c.ReconcileInterval.Seconds())
+}
+
+func (c *OperatorConfig) GetCacheSyncPeriod() time.Duration {
+	return c.CacheSyncPeriod
 }

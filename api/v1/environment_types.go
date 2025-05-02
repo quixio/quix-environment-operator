@@ -99,7 +99,7 @@ type EnvironmentStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase",description="Current phase"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
-// +kubebuilder:resource:scope=Namespaced,singular=environment,shortName=env
+// +kubebuilder:resource:scope=Cluster,singular=environment,shortName=env
 // +kubebuilder:validation:XValidation:rule="self.metadata.name == oldSelf.metadata.name",message="Environment name is immutable and cannot be changed after creation"
 // +kubebuilder:validation:XValidation:rule="self.spec.id == oldSelf.spec.id",message="Environment ID is immutable and cannot be changed after creation"
 // Environment represents a request to create and manage an isolated Kubernetes namespace

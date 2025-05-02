@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"os"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
@@ -11,6 +12,8 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -38,6 +41,7 @@ func main() {
 	var enableLeaderElection bool
 	var probeAddr string
 	var configPath string
+	var syncPeriodStr string
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -45,6 +49,7 @@ func main() {
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.StringVar(&configPath, "config", "", "The path to the config file.")
+	flag.StringVar(&syncPeriodStr, "sync-period", "10m", "The sync period for the cache.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -61,6 +66,23 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Parse sync period duration
+	syncPeriod := time.Minute * 10 // Default 10 minutes
+	if syncPeriodStr != "" {
+		d, err := time.ParseDuration(syncPeriodStr)
+		if err != nil {
+			setupLog.Error(err, "unable to parse sync period", "value", syncPeriodStr)
+			os.Exit(1)
+		}
+		syncPeriod = d
+	}
+
+	// Override sync period with operator config if available
+	if operatorConfig.CacheSyncPeriod != 0 {
+		syncPeriod = operatorConfig.CacheSyncPeriod
+		setupLog.Info("using configured cache sync period", "duration", syncPeriod)
+	}
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
 		Metrics: server.Options{
@@ -69,6 +91,13 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "quix-environment-operator.quix-analytics.com",
+		// Ensure we correctly handle cluster-scoped resources
+		Cache: cache.Options{
+			SyncPeriod: &syncPeriod,
+			ByObject: map[client.Object]cache.ByObject{
+				&quixv1.Environment{}: {}, // Enables caching for the cluster-scoped Environment CR
+			},
+		},
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
@@ -76,7 +105,7 @@ func main() {
 	}
 
 	// Create environment manager
-	environmentManager := environment.NewManager(mgr.GetClient())
+	environmentManager := environment.NewManager(mgr.GetClient(), mgr.GetAPIReader())
 
 	// Create namespace manager with proper dependencies
 	namespaceManager := namespace.NewManager(

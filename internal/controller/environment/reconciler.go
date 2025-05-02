@@ -19,8 +19,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 )
 
 const (
@@ -73,12 +76,12 @@ func NewEnvironmentReconciler(
 // Reconcile processes Environment resources
 func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
-	logger.V(1).Info("starting reconcile", "environment", req)
+	logger.V(1).Info("starting reconcile for cluster-scoped environment", "name", req.Name)
 
-	environment, err := r.environmentManager.Get(ctx, req.Name, req.Namespace)
+	environment, err := r.environmentManager.Get(ctx, req.Name)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			logger.V(1).Info("environment not found, ignoring", "environment", req)
+			logger.V(1).Info("environment not found, ignoring", "name", req.Name)
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, fmt.Errorf("error retrieving environment: %w", err)
@@ -469,11 +472,29 @@ func initResourceStatus(statusPtr **v1.ResourceStatus, phase v1.ResourceStatusPh
 
 // SetupWithManager sets up the controller with the Manager
 func (r *EnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Trigger reconciliation for all environments on startup
-	go r.ReconcileAllEnvironments(context.Background())
+	// Setup a channel to indicate when the cache is started
+	startedCh := make(chan struct{})
+
+	// Add an event handler for when the cache starts
+	if err := mgr.Add(
+		manager.RunnableFunc(func(ctx context.Context) error {
+			<-mgr.Elected()
+			close(startedCh)
+			return nil
+		}),
+	); err != nil {
+		return err
+	}
+
+	// Trigger reconciliation for all environments after cache has started
+	go func() {
+		<-startedCh
+		r.ReconcileAllEnvironments(context.Background())
+	}()
 
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&v1.Environment{}).
+		// Use a predicate that ignores namespace fields for cluster-scoped resources
+		For(&v1.Environment{}, builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		Owns(&corev1.Namespace{}).
 		Complete(r)
 }
@@ -500,8 +521,7 @@ func (r *EnvironmentReconciler) ReconcileAllEnvironments(ctx context.Context) {
 	for _, env := range environmentList.Items {
 		req := ctrl.Request{
 			NamespacedName: types.NamespacedName{
-				Name:      env.Name,
-				Namespace: env.Namespace,
+				Name: env.Name,
 			},
 		}
 		go r.Reconcile(ctx, req)
