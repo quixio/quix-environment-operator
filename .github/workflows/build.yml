@@ -285,3 +285,5 @@ jobs:
           git push origin gh-pages
           
           echo "Manually published chart to GitHub Pages at https://quixio.github.io/quix-environment-operator/${CHART_FILE}"
+
+#Whitespace
