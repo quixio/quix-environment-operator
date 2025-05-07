@@ -214,6 +214,11 @@ jobs:
           sed -i "s/^appVersion:.*/appVersion: \"${{ needs.extract-versions.outputs.app_version }}\"/" deploy/quix-environment-operator/Chart.yaml
           echo "Updated chart version to ${{ needs.extract-versions.outputs.chart_version }}"
           cat deploy/quix-environment-operator/Chart.yaml
+
+      - name: Add CRD Manifests
+        run: |
+            make manifests
+            cp config/crd/bases/*.yaml deploy/quix-environment-operator/templates/crd-manifests/
           
       - name: Verify values.yaml image tag
         run: |
@@ -299,10 +304,6 @@ jobs:
           
           # Make sure charts dir exists and package before switching branch
           if [ -d "deploy/quix-environment-operator" ]; then
-            # Create manifests for the CRDs
-            make manifests
-            cp config/crd/bases/*.yaml deploy/quix-environment-operator/templates/crd-manifests/
-
             # Package the finished chart
             helm package deploy/quix-environment-operator -d .cr-release-packages
           else
