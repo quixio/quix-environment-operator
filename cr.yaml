@@ -5,7 +5,7 @@
 index-path: ./index.yaml
 
 # Chart repository to be used for storing charts
-owner: quix-analytics
+owner: quixio
 git-repo: quix-environment-operator
 pages-branch: gh-pages
 
