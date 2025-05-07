@@ -16,8 +16,8 @@ jobs:
   extract-versions:
     runs-on: ubuntu-latest
     outputs:
-      app_version: ${{ steps.original_versions.outputs.APP_VERSION }}
-      chart_version: ${{ steps.original_versions.outputs.CHART_VERSION }}
+      app_version: ${{ steps.versions.outputs.APP_VERSION }}
+      chart_version: ${{ steps.versions.outputs.CHART_VERSION }}
       pr_number: ${{ steps.pr_info.outputs.PR_NUMBER }}
     steps:
       - name: Checkout repository
@@ -28,11 +28,9 @@ jobs:
         run: |
           APP_VERSION=$(grep 'appVersion:' deploy/quix-environment-operator/Chart.yaml | awk '{print $2}' | tr -d '"')
           CHART_VERSION=$(grep '^version:' deploy/quix-environment-operator/Chart.yaml | awk '{print $2}')
-          echo "APP_VERSION=$APP_VERSION" >> $GITHUB_ENV
-          echo "CHART_VERSION=$CHART_VERSION" >> $GITHUB_ENV
-          echo "APP_VERSION=$APP_VERSION" >> $GITHUB_OUTPUT
-          echo "CHART_VERSION=$CHART_VERSION" >> $GITHUB_OUTPUT
-          echo "Extracted appVersion: $APP_VERSION (for Docker) and chartVersion: $CHART_VERSION (for Helm)"
+          echo "Original appVersion: $APP_VERSION (for Docker) and chartVersion: $CHART_VERSION (for Helm)"
+          echo "ORIG_APP_VERSION=$APP_VERSION" >> $GITHUB_ENV
+          echo "ORIG_CHART_VERSION=$CHART_VERSION" >> $GITHUB_ENV
       
       - name: Get PR info
         id: pr_info
@@ -43,24 +41,35 @@ jobs:
             echo "PR_NUMBER=0" >> $GITHUB_OUTPUT
           fi
           
-      - name: Set development versions for non-main branch
-        if: github.ref != 'refs/heads/main'
+      - name: Set versions
+        id: versions
         run: |
-          DEV_VERSION="0.0.${{ github.run_number }}"
-          echo "Using development version: $DEV_VERSION"
-          echo "APP_VERSION=$DEV_VERSION" >> $GITHUB_ENV
-          echo "CHART_VERSION=$DEV_VERSION" >> $GITHUB_ENV
-          echo "APP_VERSION=$DEV_VERSION" >> $GITHUB_OUTPUT
-          echo "CHART_VERSION=$DEV_VERSION" >> $GITHUB_OUTPUT
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            # For main branch, use the original versions from Chart.yaml
+            APP_VERSION="${ORIG_APP_VERSION}"
+            CHART_VERSION="${ORIG_CHART_VERSION}"
+            echo "Using original versions for main branch"
+          else
+            # For non-main branch, use development version
+            DEV_VERSION="0.0.${{ github.run_number }}"
+            APP_VERSION="${DEV_VERSION}"
+            CHART_VERSION="${DEV_VERSION}"
+            echo "Using development version for non-main branch: $DEV_VERSION"
+            
+            # Update Chart.yaml with development versions
+            sed -i "s/^version:.*/version: $DEV_VERSION/" deploy/quix-environment-operator/Chart.yaml
+            sed -i "s/^appVersion:.*/appVersion: \"$DEV_VERSION\"/" deploy/quix-environment-operator/Chart.yaml
+            
+            # Show modified Chart.yaml for verification
+            echo "Modified Chart.yaml:"
+            cat deploy/quix-environment-operator/Chart.yaml
+          fi
           
-          # Update Chart.yaml with development versions
-          sed -i "s/^version:.*/version: $DEV_VERSION/" deploy/quix-environment-operator/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$DEV_VERSION\"/" deploy/quix-environment-operator/Chart.yaml
-          
-          # Show modified Chart.yaml for verification
-          echo "Modified Chart.yaml:"
-          cat deploy/quix-environment-operator/Chart.yaml
-          echo "Updated to use development version $DEV_VERSION for both appVersion and chartVersion"
+          echo "APP_VERSION=$APP_VERSION" >> $GITHUB_ENV
+          echo "CHART_VERSION=$CHART_VERSION" >> $GITHUB_ENV
+          echo "APP_VERSION=$APP_VERSION" >> $GITHUB_OUTPUT
+          echo "CHART_VERSION=$CHART_VERSION" >> $GITHUB_OUTPUT
+          echo "Final versions - appVersion: $APP_VERSION, chartVersion: $CHART_VERSION"
 
   build-test-push-docker:
     needs: extract-versions
@@ -172,6 +181,11 @@ jobs:
         run: |
           helm repo add bitnami https://charts.bitnami.com/bitnami
           helm repo update
+
+      - name: Display chart version
+        run: |
+          echo "Using chart version: ${{ needs.extract-versions.outputs.chart_version }}"
+          echo "Using app version: ${{ needs.extract-versions.outputs.app_version }}"
 
       - name: Update chart version
         run: |
