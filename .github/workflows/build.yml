@@ -237,11 +237,26 @@ jobs:
           package-path: .cr-release-packages
           EOF
 
-      - name: Run chart-releaser
+      - name: Run chart-releaser (main branch)
+        if: github.ref_name == 'main'
         uses: helm/chart-releaser-action@v1.7.0
         with:
           charts_dir: deploy
           config: cr.yaml
+          mark_as_latest: true
+        env:
+          CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CR_SKIP_EXISTING: "true"
+          CR_FORCE: "true"
+          CR_PAGES_BRANCH: "gh-pages"
+
+      - name: Run chart-releaser (other branches)
+        if: github.ref_name != 'main'
+        uses: helm/chart-releaser-action@v1.7.0
+        with:
+          charts_dir: deploy
+          config: cr.yaml
+          mark_as_latest: false
         env:
           CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CR_SKIP_EXISTING: "true"
