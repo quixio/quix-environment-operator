@@ -293,9 +293,6 @@ jobs:
           # Save the source branch name
           SOURCE_BRANCH=$(git branch --show-current)
           echo "Current branch: ${SOURCE_BRANCH}"
-
-          make manifests
-          cp ./config/crd/bases/*.yaml .cr-release-packages/crd-manifests/
           
           # Package the chart while on source branch
           mkdir -p .cr-release-packages
@@ -316,6 +313,9 @@ jobs:
             echo "Error: No charts were packaged"
             exit 1
           fi
+
+          make manifests
+          cp ./config/crd/bases/*.yaml .cr-release-packages/quix-environment-operator/templates/crd-manifests/
           
           # Get chart filename
           CHART_FILE=$(basename $(find .cr-release-packages -name "*.tgz"))
