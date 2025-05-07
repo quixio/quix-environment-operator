@@ -68,6 +68,12 @@ jobs:
             cat deploy/quix-environment-operator/Chart.yaml
           fi
           
+          # Update values.yaml with the correct image tag
+          echo "Updating values.yaml with image tag: $APP_VERSION"
+          sed -i "s/tag: \"latest\"/tag: \"$APP_VERSION\"/" deploy/quix-environment-operator/values.yaml
+          echo "Modified values.yaml:"
+          cat deploy/quix-environment-operator/values.yaml | grep -A 3 "image:"
+          
           echo "APP_VERSION=$APP_VERSION" >> $GITHUB_ENV
           echo "CHART_VERSION=$CHART_VERSION" >> $GITHUB_ENV
           echo "APP_VERSION=$APP_VERSION" >> $GITHUB_OUTPUT
@@ -208,6 +214,17 @@ jobs:
           sed -i "s/^appVersion:.*/appVersion: \"${{ needs.extract-versions.outputs.app_version }}\"/" deploy/quix-environment-operator/Chart.yaml
           echo "Updated chart version to ${{ needs.extract-versions.outputs.chart_version }}"
           cat deploy/quix-environment-operator/Chart.yaml
+          
+      - name: Verify values.yaml image tag
+        run: |
+          # Ensure values.yaml has the correct image tag
+          echo "Verifying values.yaml image tag..."
+          if grep -q "tag: \"latest\"" deploy/quix-environment-operator/values.yaml; then
+            echo "Updating values.yaml with image tag: ${{ needs.extract-versions.outputs.app_version }}"
+            sed -i "s/tag: \"latest\"/tag: \"${{ needs.extract-versions.outputs.app_version }}\"/" deploy/quix-environment-operator/values.yaml
+          fi
+          echo "Current values.yaml image configuration:"
+          cat deploy/quix-environment-operator/values.yaml | grep -A 3 "image:"
 
       - name: Create config file
         run: |
