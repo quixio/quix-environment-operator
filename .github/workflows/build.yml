@@ -63,7 +63,7 @@ jobs:
           
           # Show modified Chart.yaml for verification
           echo "Modified Chart.yaml:"
-          cat helm/quix-environment-operator/Chart.yaml
+          cat deploy/quix-environment-operator/Chart.yaml
           echo "Updated to use development version $DEV_VERSION for both appVersion and chartVersion"
 
   build-test-push-docker:
@@ -180,10 +180,10 @@ jobs:
       - name: Update chart version
         run: |
           # Update Chart.yaml with the version from earlier steps
-          sed -i "s/^version:.*/version: ${{ needs.extract-versions.outputs.chart_version }}/" helm/quix-environment-operator/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"${{ needs.extract-versions.outputs.app_version }}\"/" helm/quix-environment-operator/Chart.yaml
+          sed -i "s/^version:.*/version: ${{ needs.extract-versions.outputs.chart_version }}/" deploy/quix-environment-operator/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"${{ needs.extract-versions.outputs.app_version }}\"/" deploy/quix-environment-operator/Chart.yaml
           echo "Updated chart version to ${{ needs.extract-versions.outputs.chart_version }}"
-          cat helm/quix-environment-operator/Chart.yaml
+          cat deploy/quix-environment-operator/Chart.yaml
 
       - name: Create config file
         run: |
@@ -242,8 +242,8 @@ jobs:
           mkdir -p .cr-release-packages
           
           # Make sure charts dir exists and package before switching branch
-          if [ -d "helm/quix-environment-operator" ]; then
-            helm package helm/quix-environment-operator -d .cr-release-packages
+          if [ -d "deploy/quix-environment-operator" ]; then
+            helm package deploy/quix-environment-operator -d .cr-release-packages
           else
             # Fallback to look for the chart elsewhere
             find . -name Chart.yaml -exec dirname {} \; | while read chart_dir; do

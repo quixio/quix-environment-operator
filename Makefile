@@ -215,7 +215,7 @@ undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/confi
 .PHONY: helm-package
 helm-package: ## Package the Helm chart.
 	@echo "Packaging Helm chart..."
-	@mkdir -p helm/quix-environment-operator/charts
+	@mkdir -p ./helm
 	@helm package ./deploy/quix-environment-operator -d ./helm
 
 .PHONY: helm-lint
