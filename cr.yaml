@@ -1,0 +1,22 @@
+# Chart Releaser Configuration
+# See: https://github.com/helm/chart-releaser
+
+# Explicitly set index path to ./index.yaml
+index-path: ./index.yaml
+
+# Chart repository to be used for storing charts
+owner: quixio
+git-repo: quix-environment-operator
+pages-branch: gh-pages
+
+# Chart repository URL
+charts-repo: https://quixio.github.io/quix-environment-operator/
+
+# URL template for chart packages
+chart-url-template: "https://quixio.github.io/quix-environment-operator/{{ .Name }}-{{ .Version }}.tgz"
+
+# Skip already released charts
+skip-existing: true
+
+# Package all charts
+package-path: .cr-release-packages 

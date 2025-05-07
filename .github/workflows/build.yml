@@ -10,14 +10,15 @@ on:
 env:
   REGISTRY: docker.io
   IMAGE_NAME: quixanalytics/quix-environment-operator
-  HELM_REGISTRY: oci://registry-1.docker.io/quixanalytics
+  HELM_REPO_NAME: quixanalytics/quix-environment-operator-helm
 
 jobs:
   extract-versions:
     runs-on: ubuntu-latest
     outputs:
-      app_version: ${{ steps.original_versions.outputs.APP_VERSION }}
-      chart_version: ${{ steps.original_versions.outputs.CHART_VERSION }}
+      app_version: ${{ steps.versions.outputs.APP_VERSION }}
+      chart_version: ${{ steps.versions.outputs.CHART_VERSION }}
+      pr_number: ${{ steps.pr_info.outputs.PR_NUMBER }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -27,68 +28,60 @@ jobs:
         run: |
           APP_VERSION=$(grep 'appVersion:' deploy/quix-environment-operator/Chart.yaml | awk '{print $2}' | tr -d '"')
           CHART_VERSION=$(grep '^version:' deploy/quix-environment-operator/Chart.yaml | awk '{print $2}')
+          echo "Original appVersion: $APP_VERSION (for Docker) and chartVersion: $CHART_VERSION (for Helm)"
+          echo "ORIG_APP_VERSION=$APP_VERSION" >> $GITHUB_ENV
+          echo "ORIG_CHART_VERSION=$CHART_VERSION" >> $GITHUB_ENV
+      
+      - name: Get PR info
+        id: pr_info
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "PR_NUMBER=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+          else
+            echo "PR_NUMBER=0" >> $GITHUB_OUTPUT
+          fi
+          
+      - name: Set versions
+        id: versions
+        run: |
+          echo "Current GitHub ref: ${{ github.ref }}"
+          echo "Is main branch? ${{ github.ref == 'refs/heads/main' }}"
+          
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            # For main branch, use the original versions from Chart.yaml
+            APP_VERSION="${ORIG_APP_VERSION}"
+            CHART_VERSION="${ORIG_CHART_VERSION}"
+            echo "Using original versions for main branch"
+          else
+            # For non-main branch, use development version
+            DEV_VERSION="0.0.${{ github.run_number }}"
+            APP_VERSION="${DEV_VERSION}"
+            CHART_VERSION="${DEV_VERSION}"
+            echo "Using development version for non-main branch: $DEV_VERSION"
+            
+            # Update Chart.yaml with development versions
+            sed -i "s/^version:.*/version: $DEV_VERSION/" deploy/quix-environment-operator/Chart.yaml
+            sed -i "s/^appVersion:.*/appVersion: \"$DEV_VERSION\"/" deploy/quix-environment-operator/Chart.yaml
+            
+            # Show modified Chart.yaml for verification
+            echo "Modified Chart.yaml:"
+            cat deploy/quix-environment-operator/Chart.yaml
+          fi
+          
+          # Update values.yaml with the correct image tag
+          echo "Updating values.yaml with image tag: $APP_VERSION"
+          sed -i "s/tag: \"latest\"/tag: \"$APP_VERSION\"/" deploy/quix-environment-operator/values.yaml
+          echo "Modified values.yaml:"
+          cat deploy/quix-environment-operator/values.yaml | grep -A 3 "image:"
+          
           echo "APP_VERSION=$APP_VERSION" >> $GITHUB_ENV
           echo "CHART_VERSION=$CHART_VERSION" >> $GITHUB_ENV
           echo "APP_VERSION=$APP_VERSION" >> $GITHUB_OUTPUT
           echo "CHART_VERSION=$CHART_VERSION" >> $GITHUB_OUTPUT
-          
-      - name: Set development versions for non-main branch
-        if: github.ref != 'refs/heads/main'
-        run: |
-          DEV_VERSION="0.0.${{ github.run_number }}"
-          echo "Using development version: $DEV_VERSION"
-          echo "APP_VERSION=$DEV_VERSION" >> $GITHUB_ENV
-          echo "CHART_VERSION=$DEV_VERSION" >> $GITHUB_ENV
-          
-          # Update Chart.yaml with development versions
-          sed -i "s/^version:.*/version: $DEV_VERSION/" deploy/quix-environment-operator/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$DEV_VERSION\"/" deploy/quix-environment-operator/Chart.yaml
-          
-          # Show modified Chart.yaml for verification
-          echo "Modified Chart.yaml:"
-          cat deploy/quix-environment-operator/Chart.yaml
+          echo "Final versions - appVersion: $APP_VERSION, chartVersion: $CHART_VERSION"
 
-  build-docker:
+  build-test-push-docker:
     needs: extract-versions
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build Docker image
-        run: |
-          export IMG="${REGISTRY}/${IMAGE_NAME}:${{ needs.extract-versions.outputs.app_version }}"
-          make docker-build
-          echo "Docker image built successfully"
-
-  build-helm:
-    needs: extract-versions
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Helm
-        uses: azure/setup-helm@v3
-        with:
-          version: 'latest'
-
-      - name: Package and lint Helm chart
-        run: |
-          make helm-lint
-          make helm-package
-          echo "Helm chart packaged successfully"
-
-  push-docker:
-    needs: [extract-versions, build-docker]
-    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -97,6 +90,34 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Debug branch info
+        run: |
+          echo "Current GitHub ref: ${{ github.ref }}"
+          echo "Is main branch? ${{ github.ref == 'refs/heads/main' }}"
+          echo "App version: ${{ needs.extract-versions.outputs.app_version }}"
+          git branch --show-current
+          git rev-parse --abbrev-ref HEAD
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Display Docker image version
+        run: |
+          echo "Building Docker image with appVersion: ${{ needs.extract-versions.outputs.app_version }}"
+          echo "Docker image will be tagged as: ${REGISTRY}/${IMAGE_NAME}:${{ needs.extract-versions.outputs.app_version }}"
+
+      - name: Build Docker image
+        run: |
+          # Use appVersion for Docker image
+          export IMG="${REGISTRY}/${IMAGE_NAME}:${{ needs.extract-versions.outputs.app_version }}"
+          make docker-build
+          echo "Docker image built successfully with tag: $IMG"
+      
+      - name: Run tests in Docker
+        run: |
+          make docker-test
+          echo "All tests passed successfully"
+      
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
@@ -105,34 +126,205 @@ jobs:
 
       - name: Push Docker image
         run: |
+          # Push with appVersion tag
           export IMG="${REGISTRY}/${IMAGE_NAME}:${{ needs.extract-versions.outputs.app_version }}"
           make docker-push
+          echo "Pushed Docker image with appVersion tag: $IMG"
           
-          # Add and push latest tag for main branch
-          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-            docker tag ${IMG} ${REGISTRY}/${IMAGE_NAME}:latest
-            docker push ${REGISTRY}/${IMAGE_NAME}:latest
+          # For main branch, also tag as latest
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "Pushing latest tag for Docker image"
+            LATEST_IMG="${REGISTRY}/${IMAGE_NAME}:latest"
+            docker tag ${IMG} ${LATEST_IMG}
+            docker push ${LATEST_IMG}
+            echo "Pushed Docker image with latest tag: ${LATEST_IMG}"
+          else
+            echo "Skipping latest tag for non-main branch: ${{ github.ref }}"
           fi
+          
           echo "Docker image pushed successfully"
 
-  push-helm:
-    needs: [extract-versions, build-helm]
-    if: github.event_name != 'pull_request'
+  build-and-push-helm:
+    needs: extract-versions
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      packages: write
+      contents: write  # Needed for creating releases
+      pages: write     # Needed for GitHub Pages
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Required for chart-releaser to find chart changes
+
+      - name: Configure Git
+        run: |
+          git config user.name "${{ github.actor }}"
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
+
+      - name: Create gh-pages branch if needed
+        run: |
+          # Save current branch name
+          CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          echo "Current branch: ${CURRENT_BRANCH}"
+          
+          # Check if gh-pages branch exists
+          if ! git ls-remote --heads origin gh-pages | grep -q 'gh-pages'; then
+            echo "Creating gh-pages branch"
+            git checkout --orphan gh-pages
+            git reset --hard
+            git commit --allow-empty -m "Initialize gh-pages branch"
+            git push origin gh-pages
+            
+            # Try to go back to original branch
+            if git checkout ${CURRENT_BRANCH}; then
+              echo "Returned to ${CURRENT_BRANCH} branch"
+            elif git checkout main; then
+              echo "Returned to main branch"
+            elif git checkout master; then
+              echo "Returned to master branch"
+            else
+              echo "Warning: Could not return to original branch, using default branch"
+              git checkout $(git remote show origin | grep 'HEAD branch' | cut -d' ' -f5)
+            fi
+            
+            echo "Created gh-pages branch successfully"
+          else
+            echo "gh-pages branch already exists"
+          fi
 
       - name: Set up Helm
         uses: azure/setup-helm@v3
         with:
           version: 'latest'
 
-      - name: Push Helm chart to OCI registry
+      - name: Add dependency repositories
         run: |
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | helm registry login -u ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin registry-1.docker.io
-          helm push ./deploy/quix-environment-operator-${{ needs.extract-versions.outputs.chart_version }}.tgz ${{ env.HELM_REGISTRY }}
-          echo "Helm chart pushed successfully" 
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo update
+
+      - name: Display chart version
+        run: |
+          echo "Using chart version: ${{ needs.extract-versions.outputs.chart_version }}"
+          echo "Using app version: ${{ needs.extract-versions.outputs.app_version }}"
+
+      - name: Update chart version
+        run: |
+          # Update Chart.yaml with the version from earlier steps
+          sed -i "s/^version:.*/version: ${{ needs.extract-versions.outputs.chart_version }}/" deploy/quix-environment-operator/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"${{ needs.extract-versions.outputs.app_version }}\"/" deploy/quix-environment-operator/Chart.yaml
+          echo "Updated chart version to ${{ needs.extract-versions.outputs.chart_version }}"
+          cat deploy/quix-environment-operator/Chart.yaml
+          
+      - name: Verify values.yaml image tag
+        run: |
+          # Ensure values.yaml has the correct image tag
+          echo "Verifying values.yaml image tag..."
+          if grep -q "tag: \"latest\"" deploy/quix-environment-operator/values.yaml; then
+            echo "Updating values.yaml with image tag: ${{ needs.extract-versions.outputs.app_version }}"
+            sed -i "s/tag: \"latest\"/tag: \"${{ needs.extract-versions.outputs.app_version }}\"/" deploy/quix-environment-operator/values.yaml
+          fi
+          echo "Current values.yaml image configuration:"
+          cat deploy/quix-environment-operator/values.yaml | grep -A 3 "image:"
+
+      - name: Create config file
+        run: |
+          cat > cr.yaml <<EOF
+          index-path: ./index.yaml
+          charts-repo: https://quixio.github.io/quix-environment-operator/
+          pages-branch: gh-pages
+          # Use direct URL format without extra directory level
+          chart-url-template: "https://quixio.github.io/quix-environment-operator/{{ .Name }}-{{ .Version }}.tgz"
+          package-path: .cr-release-packages
+          EOF
+
+      - name: Run chart-releaser
+        uses: helm/chart-releaser-action@v1.7.0
+        with:
+          charts_dir: deploy
+          config: cr.yaml
+        env:
+          CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CR_SKIP_EXISTING: "true"
+          CR_FORCE: "true"
+          CR_PAGES_BRANCH: "gh-pages"
+          
+      - name: Fallback - Manual Chart Publishing
+        if: failure()
+        run: |
+          echo "Chart-releaser action failed, using manual approach"
+          
+          # Make sure we're not on gh-pages branch
+          if [[ $(git branch --show-current) == "gh-pages" ]]; then
+            echo "Currently on gh-pages branch, switching back to source branch"
+            
+            # Remember original branch/ref
+            GITHUB_REF_NAME="${GITHUB_REF_NAME:-main}"
+            echo "Attempting to return to branch: ${GITHUB_REF_NAME}"
+            
+            # Try different branches in order
+            if git fetch origin ${GITHUB_REF_NAME} && git checkout ${GITHUB_REF_NAME}; then
+              echo "Returned to ${GITHUB_REF_NAME} branch"
+            elif git fetch origin main && git checkout main; then
+              echo "Returned to main branch"
+            else
+              # As a last resort, get the default branch from the remote
+              DEFAULT_BRANCH=$(git remote show origin | grep 'HEAD branch' | cut -d ' ' -f5)
+              git fetch origin ${DEFAULT_BRANCH}
+              git checkout ${DEFAULT_BRANCH}
+              echo "Returned to ${DEFAULT_BRANCH} branch"
+            fi
+          fi
+          
+          # Save the source branch name
+          SOURCE_BRANCH=$(git branch --show-current)
+          echo "Current branch: ${SOURCE_BRANCH}"
+          
+          # Package the chart while on source branch
+          mkdir -p .cr-release-packages
+          
+          # Make sure charts dir exists and package before switching branch
+          if [ -d "deploy/quix-environment-operator" ]; then
+            helm package deploy/quix-environment-operator -d .cr-release-packages
+          else
+            # Fallback to look for the chart elsewhere
+            find . -name Chart.yaml -exec dirname {} \; | while read chart_dir; do
+              echo "Found chart at: ${chart_dir}"
+              helm package ${chart_dir} -d .cr-release-packages
+            done
+          fi
+          
+          # Make sure we actually packaged something
+          if [ ! "$(ls -A .cr-release-packages)" ]; then
+            echo "Error: No charts were packaged"
+            exit 1
+          fi
+          
+          # Get chart filename
+          CHART_FILE=$(basename $(find .cr-release-packages -name "*.tgz"))
+          echo "Chart file: ${CHART_FILE}"
+          
+          # Clone gh-pages branch 
+          git fetch origin gh-pages
+          git checkout gh-pages
+          
+          # Copy packaged chart
+          cp .cr-release-packages/*.tgz .
+          
+          # Create or update the Helm repo index file on gh-pages
+          # Important: Use the URL that refers directly to files in gh-pages, not GitHub releases
+          if [ -f "index.yaml" ]; then
+            # Update existing index
+            helm repo index --url https://quixio.github.io/quix-environment-operator/ --merge index.yaml .
+          else
+            # Create new index
+            helm repo index --url https://quixio.github.io/quix-environment-operator/ .
+          fi
+          
+          # Commit and push to gh-pages
+          git add .
+          git commit -m "Update Helm chart release [skip ci]"
+          git push origin gh-pages
+          
+          echo "Manually published chart to GitHub Pages at https://quixio.github.io/quix-environment-operator/${CHART_FILE}"
+
+#Whitespace
