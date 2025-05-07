@@ -278,6 +278,9 @@ jobs:
           # Save the source branch name
           SOURCE_BRANCH=$(git branch --show-current)
           echo "Current branch: ${SOURCE_BRANCH}"
+
+          make manifests
+          cp ./config/crd/bases/*.yaml .cr-release-packages/crd-manifests/
           
           # Package the chart while on source branch
           mkdir -p .cr-release-packages

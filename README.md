@@ -23,6 +23,14 @@ A Kubernetes controller for secure, declarative provisioning of isolated applica
 
 Packaged as a Helm chart for customer-managed Kubernetes clusters. Operates within pre-approved RBAC constraints.
 
+Install a specific version
+```
+operator_version=0.1.1
+helm repo add quix-environment-operator https://quixio.github.io/quix-environment-operator/ && helm repo update
+helm pull quix-environment-operator/quix-environment-operator --version $operator_version
+helm upgrade --install quix-environment-operator -n quix-operator --create-namespace ./quix-environment-operator-$operator_version.tgz
+```
+
 ## Development
 
 ### Setup
