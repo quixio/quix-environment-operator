@@ -1,0 +1,7 @@
+apiVersion: quix.io/v1
+kind: Environment
+metadata:
+  name: minimal-environment
+spec:
+  # Only the ID field is required
+  id: minimal-env 

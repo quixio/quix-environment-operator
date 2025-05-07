@@ -147,12 +147,25 @@ func (m *DefaultManager) Delete(ctx context.Context, env *v1.Environment) error 
 	logger := log.FromContext(ctx).WithValues("namespace", namespaceName)
 	logger.V(1).Info("Attempting to delete namespace")
 
-	namespace := &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: namespaceName,
-		},
+	// Check if the namespace exists
+	namespace, err := m.Get(ctx, env)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			logger.V(1).Info("Namespace already deleted")
+			return nil
+		}
+		return fmt.Errorf("failed to get namespace: %w", err)
 	}
 
+	// Check if the namespace is managed by this operator before deleting
+	if namespace.Labels == nil || namespace.Labels[ManagedByLabel] != OperatorName {
+		logger.V(0).Info("Namespace is not managed by this operator, skipping deletion")
+		m.recorder.Eventf(env, corev1.EventTypeWarning, "NamespaceNotManaged",
+			"Namespace %s is not managed by this operator and will not be deleted", namespaceName)
+		return fmt.Errorf("namespace %s is not managed by this operator and will not be deleted", namespaceName)
+	}
+
+	// Proceed with deletion
 	if err := m.client.Delete(ctx, namespace); err != nil {
 		if errors.IsNotFound(err) {
 			logger.V(1).Info("Namespace already deleted")
@@ -342,7 +355,17 @@ func isValidLabelPrefix(key string) bool {
 
 // GetNamespaceName returns the standardized name for the environment namespace
 func (m *DefaultManager) GetNamespaceName(env *v1.Environment) string {
-	return fmt.Sprintf("%s%s", env.Spec.Id, m.config.GetNamespaceSuffix())
+	// Use stored namespace name if available
+	if env.Status.NamespaceStatus != nil && env.Status.NamespaceStatus.ResourceName != "" {
+		return env.Status.NamespaceStatus.ResourceName
+	}
+
+	// Otherwise use the default naming convention
+	if env.Status.NamespaceStatus == nil {
+		env.Status.NamespaceStatus = &v1.ResourceStatus{}
+	}
+	env.Status.NamespaceStatus.ResourceName = fmt.Sprintf("%s%s", env.Spec.Id, m.config.GetNamespaceSuffix())
+	return env.Status.NamespaceStatus.ResourceName
 }
 
 // isValidEnvironmentId checks if the environment ID matches the configured regex pattern

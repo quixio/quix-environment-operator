@@ -47,8 +47,11 @@ env:
   environmentRegex: ""
   
   # ServiceAccount for RoleBindings
-  serviceAccountName: "quix-environment-user"
-  serviceAccountNamespace: "quix-system"
+  serviceAccountName: "quix-platform-account"
   
   # ClusterRole for RoleBindings
-  clusterRoleName: "quix-environment-user" 
+  clusterRoleName: "quix-platform-account-role"
+  
+  # Cache sync period for informers (how often controller checks for changes)
+  cacheSyncPeriod: "10m"
+  

@@ -31,12 +31,10 @@ type EnvironmentSpec struct {
 }
 
 // EnvironmentPhase represents the current phase of the Environment
-// +kubebuilder:validation:Enum=Pending;InProgress;Ready;Failed;Deleting
+// +kubebuilder:validation:Enum=InProgress;Ready;Failed;Deleting
 type EnvironmentPhase string
 
 const (
-	// EnvironmentPhasePending indicates the environment is pending
-	EnvironmentPhasePending EnvironmentPhase = "Pending"
 	// EnvironmentPhaseInProgress indicates the environment is in progress
 	EnvironmentPhaseInProgress EnvironmentPhase = "InProgress"
 	// EnvironmentPhaseReady indicates the environment is ready for use
@@ -47,10 +45,27 @@ const (
 	EnvironmentPhaseDeleting EnvironmentPhase = "Deleting"
 )
 
-// ResourcePhase represents the lifecycle phase of a managed sub-resource
-type ResourcePhase struct {
-	Phase   string `json:"phase,omitempty"`
-	Message string `json:"message,omitempty"`
+// ResourceStatusPhase represents the current phase of a managed sub-resource
+// +kubebuilder:validation:Enum=Creating;Active;Failed;Deleting
+type ResourceStatusPhase string
+
+const (
+	// ResourceStatusPhaseCreating indicates the resource is being created
+	ResourceStatusPhaseCreating ResourceStatusPhase = "Creating"
+	// ResourceStatusPhaseActive indicates the resource is active
+	ResourceStatusPhaseActive ResourceStatusPhase = "Active"
+	// ResourceStatusPhaseFailed indicates the resource creation failed
+	ResourceStatusPhaseFailed ResourceStatusPhase = "Failed"
+	// ResourceStatusPhaseDeleting indicates the resource is being deleted
+	ResourceStatusPhaseDeleting ResourceStatusPhase = "Deleting"
+)
+
+// ResourceStatus represents the lifecycle status of a managed sub-resource
+type ResourceStatus struct {
+	Phase   ResourceStatusPhase `json:"phase,omitempty"`
+	Message string              `json:"message,omitempty"`
+	// ResourceName stores the name of the created resource (e.g. namespace name, role binding name)
+	ResourceName string `json:"resourceName,omitempty"`
 }
 
 // EnvironmentStatus defines the observed state of Environment
@@ -71,20 +86,20 @@ type EnvironmentStatus struct {
 	// +optional
 	LastUpdated metav1.Time `json:"lastUpdated,omitempty"`
 
-	// NamespacePhase indicates the current state of the managed namespace
+	// NamespaceStatus indicates the current state of the managed namespace
 	// +optional
-	NamespacePhase *ResourcePhase `json:"namespacePhase,omitempty"`
+	NamespaceStatus *ResourceStatus `json:"namespaceStatus,omitempty"`
 
-	// RoleBindingPhase indicates the current state of the managed role binding
+	// RoleBindingStatus indicates the current state of the managed role binding
 	// +optional
-	RoleBindingPhase *ResourcePhase `json:"roleBindingPhase,omitempty"`
+	RoleBindingStatus *ResourceStatus `json:"roleBindingStatus,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase",description="Current phase"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
-// +kubebuilder:resource:scope=Namespaced,singular=environment,shortName=env
+// +kubebuilder:resource:scope=Cluster,singular=environment,shortName=env
 // +kubebuilder:validation:XValidation:rule="self.metadata.name == oldSelf.metadata.name",message="Environment name is immutable and cannot be changed after creation"
 // +kubebuilder:validation:XValidation:rule="self.spec.id == oldSelf.spec.id",message="Environment ID is immutable and cannot be changed after creation"
 // Environment represents a request to create and manage an isolated Kubernetes namespace

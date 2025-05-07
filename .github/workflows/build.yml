@@ -30,8 +30,8 @@ jobs:
       - name: Extract original versions
         id: original_versions
         run: |
-          APP_VERSION=$(grep 'appVersion:' helm/quix-environment-operator/Chart.yaml | awk '{print $2}' | tr -d '"')
-          CHART_VERSION=$(grep '^version:' helm/quix-environment-operator/Chart.yaml | awk '{print $2}')
+          APP_VERSION=$(grep 'appVersion:' deploy/quix-environment-operator/Chart.yaml | awk '{print $2}' | tr -d '"')
+          CHART_VERSION=$(grep '^version:' deploy/quix-environment-operator/Chart.yaml | awk '{print $2}')
           echo "APP_VERSION=$APP_VERSION" >> $GITHUB_ENV
           echo "CHART_VERSION=$CHART_VERSION" >> $GITHUB_ENV
           echo "APP_VERSION=$APP_VERSION" >> $GITHUB_OUTPUT
@@ -58,8 +58,8 @@ jobs:
           echo "CHART_VERSION=$DEV_VERSION" >> $GITHUB_OUTPUT
           
           # Update Chart.yaml with development versions
-          sed -i "s/^version:.*/version: $DEV_VERSION/" helm/quix-environment-operator/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"$DEV_VERSION\"/" helm/quix-environment-operator/Chart.yaml
+          sed -i "s/^version:.*/version: $DEV_VERSION/" deploy/quix-environment-operator/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"$DEV_VERSION\"/" deploy/quix-environment-operator/Chart.yaml
           
           # Show modified Chart.yaml for verification
           echo "Modified Chart.yaml:"

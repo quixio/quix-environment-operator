@@ -21,10 +21,6 @@ rules:
 - apiGroups: ["networking.k8s.io"]
   resources: ["ingresses", "networkpolicies"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-# Allow users to create ServiceAccount tokens
-- apiGroups: [""]
-  resources: ["serviceaccounts/token"]
-  verbs: ["create"]
 # Allow users to execute pods for debugging
 - apiGroups: [""]
   resources: ["pods/exec", "pods/log"]
