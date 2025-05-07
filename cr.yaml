@@ -9,6 +9,12 @@ owner: quix-analytics
 git-repo: quix-environment-operator
 pages-branch: gh-pages
 
+# Chart repository URL
+charts-repo: https://quixio.github.io/quix-environment-operator/
+
+# URL template for chart packages
+chart-url-template: "https://quixio.github.io/quix-environment-operator/{{ .Name }}-{{ .Version }}.tgz"
+
 # Skip already released charts
 skip-existing: true
 
