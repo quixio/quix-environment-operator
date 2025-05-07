@@ -299,13 +299,16 @@ jobs:
           
           # Make sure charts dir exists and package before switching branch
           if [ -d "deploy/quix-environment-operator" ]; then
+            # Create manifests for the CRDs
+            make manifests
+            cp config/crd/bases/*.yaml deploy/quix-environment-operator/templates/crd-manifests/
+
+            # Package the finished chart
             helm package deploy/quix-environment-operator -d .cr-release-packages
           else
-            # Fallback to look for the chart elsewhere
-            find . -name Chart.yaml -exec dirname {} \; | while read chart_dir; do
-              echo "Found chart at: ${chart_dir}"
-              helm package ${chart_dir} -d .cr-release-packages
-            done
+            echo "Error: No charts were found"
+            exit 1
+
           fi
           
           # Make sure we actually packaged something
@@ -313,9 +316,6 @@ jobs:
             echo "Error: No charts were packaged"
             exit 1
           fi
-
-          make manifests
-          cp ./config/crd/bases/*.yaml .cr-release-packages/quix-environment-operator/templates/crd-manifests/
           
           # Get chart filename
           CHART_FILE=$(basename $(find .cr-release-packages -name "*.tgz"))
