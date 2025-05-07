@@ -10,10 +10,6 @@ on:
 env:
   REGISTRY: docker.io
   IMAGE_NAME: quixanalytics/quix-environment-operator
-  # Modified registry URL format to avoid "insufficient_scope: authorization failed" error
-  # Using a simpler URL structure separates the registry from the repository path
-  HELM_REGISTRY: oci://registry-1.docker.io
-  # Use original repo name since we've changed the chart name in Chart.yaml
   HELM_REPO_NAME: quixanalytics/quix-environment-operator-helm
 
 jobs:
