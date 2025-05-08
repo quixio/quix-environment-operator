@@ -214,6 +214,13 @@ jobs:
           sed -i "s/^appVersion:.*/appVersion: \"${{ needs.extract-versions.outputs.app_version }}\"/" deploy/quix-environment-operator/Chart.yaml
           echo "Updated chart version to ${{ needs.extract-versions.outputs.chart_version }}"
           cat deploy/quix-environment-operator/Chart.yaml
+
+      - name: Add CRD Manifests
+        run: |
+            make setup-dev
+            make manifests
+            mkdir -p deploy/quix-environment-operator/templates/crd-manifests/
+            cp config/crd/bases/*.yaml deploy/quix-environment-operator/templates/crd-manifests/
           
       - name: Verify values.yaml image tag
         run: |
@@ -237,11 +244,26 @@ jobs:
           package-path: .cr-release-packages
           EOF
 
-      - name: Run chart-releaser
+      - name: Run chart-releaser (main branch)
+        if: github.ref_name == 'main'
         uses: helm/chart-releaser-action@v1.7.0
         with:
           charts_dir: deploy
           config: cr.yaml
+          mark_as_latest: true
+        env:
+          CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CR_SKIP_EXISTING: "true"
+          CR_FORCE: "true"
+          CR_PAGES_BRANCH: "gh-pages"
+
+      - name: Run chart-releaser (other branches)
+        if: github.ref_name != 'main'
+        uses: helm/chart-releaser-action@v1.7.0
+        with:
+          charts_dir: deploy
+          config: cr.yaml
+          mark_as_latest: false
         env:
           CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CR_SKIP_EXISTING: "true"
@@ -284,13 +306,12 @@ jobs:
           
           # Make sure charts dir exists and package before switching branch
           if [ -d "deploy/quix-environment-operator" ]; then
+            # Package the finished chart
             helm package deploy/quix-environment-operator -d .cr-release-packages
           else
-            # Fallback to look for the chart elsewhere
-            find . -name Chart.yaml -exec dirname {} \; | while read chart_dir; do
-              echo "Found chart at: ${chart_dir}"
-              helm package ${chart_dir} -d .cr-release-packages
-            done
+            echo "Error: No charts were found"
+            exit 1
+
           fi
           
           # Make sure we actually packaged something
