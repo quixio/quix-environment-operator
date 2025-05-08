@@ -217,7 +217,7 @@ jobs:
 
       - name: Add CRD Manifests
         run: |
-            make build
+            make setup-dev
             make manifests
             cp config/crd/bases/*.yaml deploy/quix-environment-operator/templates/crd-manifests/
           
