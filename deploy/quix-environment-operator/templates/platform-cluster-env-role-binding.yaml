@@ -6,8 +6,8 @@ metadata:
     {{- include "quix-environment-operator.labels" . | nindent 4 }}
 subjects:
 - kind: ServiceAccount
-  name:  {{ .Values.env.clusterRoleName }}
-  namespace: {{ .Release.Namespace }}
+  name:  {{ .Values.env.serviceAccountName }}
+  namespace: {{ .Values.env.serviceAccountNamespace | default .Release.Namespace }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
