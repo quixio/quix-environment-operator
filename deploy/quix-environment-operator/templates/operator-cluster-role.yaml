@@ -37,23 +37,29 @@ rules:
 
 # The following rules are required for the operator only to be able to grant them to the service account at namespace level
 # see /deploy/quix-environment-operator/templates/platform-cluster-role.yaml
-# Allow management of core resources
+# Allow users to access standard Kubernetes resources within their namespace
 - apiGroups: [""]
-  resources: ["configmaps", "persistentvolumeclaims", "pods", "secrets", "serviceaccounts", "services"]
+  resources: ["pods", "services", "configmaps", "secrets", "serviceaccounts", "persistentvolumeclaims"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-# Special pod-related permissions
-- apiGroups: [""]
-  resources: ["pods/exec", "pods/log"]
-  verbs: ["get", "list", "create"]
-# App deployment resources
+# Allow users to access deployment-related resources
 - apiGroups: ["apps"]
-  resources: ["daemonsets", "deployments", "replicasets", "statefulsets"]
+  resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-# Batch job resources
+- apiGroups: ["apps"]
+  resources: ["statefulsets/scale"]
+  verbs: ["get", "patch", "update"]
+# Allow users to access batch resources
 - apiGroups: ["batch"]
-  resources: ["cronjobs", "jobs"]
+  resources: ["jobs", "cronjobs"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-# Networking resources
+# Allow users to access networking resources
 - apiGroups: ["networking.k8s.io"]
   resources: ["ingresses", "networkpolicies"]
-  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"] 
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# Allow users to execute pods for debugging
+- apiGroups: [""]
+  resources: ["pods/exec", "pods/log"]
+  verbs: ["get", "list", "create"] 
+- apiGroups: [""]
+  resources: ["pods/status"]
+  verbs: ["get"]

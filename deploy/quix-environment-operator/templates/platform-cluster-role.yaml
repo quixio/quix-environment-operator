@@ -13,6 +13,9 @@ rules:
 - apiGroups: ["apps"]
   resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["apps"]
+  resources: ["statefulsets/scale"]
+  verbs: ["get", "patch", "update"]
 # Allow users to access batch resources
 - apiGroups: ["batch"]
   resources: ["jobs", "cronjobs"]
@@ -25,3 +28,6 @@ rules:
 - apiGroups: [""]
   resources: ["pods/exec", "pods/log"]
   verbs: ["get", "list", "create"] 
+- apiGroups: [""]
+  resources: ["pods/status"]
+  verbs: ["get"]

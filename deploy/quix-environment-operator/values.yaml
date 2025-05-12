@@ -48,6 +48,9 @@ env:
   
   # ServiceAccount for RoleBindings
   serviceAccountName: "quix-platform-account"
+
+  # Service account namespace, which defaults to release namespace
+  serviceAccountNameSpace:
   
   # ClusterRole for RoleBindings
   clusterRoleName: "quix-platform-account-role"
