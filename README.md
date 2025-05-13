@@ -25,7 +25,7 @@ Packaged as a Helm chart for customer-managed Kubernetes clusters. Operates with
 
 Install a specific version
 ```
-operator_version=0.1.2
+operator_version=0.1.3
 operator_env_regex=""
 helm repo add quix-environment-operator https://quixio.github.io/quix-environment-operator/ && helm repo update
 helm pull quix-environment-operator/quix-environment-operator --version $operator_version
