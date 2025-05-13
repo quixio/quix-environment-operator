@@ -40,7 +40,7 @@ spec:
             - name: SERVICE_ACCOUNT_NAME
               value: {{ .Values.env.serviceAccountName | quote }}
             - name: SERVICE_ACCOUNT_NAMESPACE
-              value: {{ .Release.Namespace | quote }}
+              value: {{ .Values.env.serviceAccountNameSpace | default .Release.Namespace | quote }}
             - name: CLUSTER_ROLE_NAME
               value: {{ .Values.env.clusterRoleName | quote }}
             - name: CACHE_SYNC_PERIOD
