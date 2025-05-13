@@ -20,7 +20,7 @@ rules:
 # Allows the controller to create and manage namespaces for environments
 - apiGroups: [""]
   resources: ["namespaces"]
-  verbs: ["get", "create", "delete", "watch"]
+  verbs: ["get", "create", "delete", "watch", "update", "patch"]
 # Enables the controller to manage role bindings for environment access control
 - apiGroups: ["rbac.authorization.k8s.io"]
   resources: ["rolebindings"]
