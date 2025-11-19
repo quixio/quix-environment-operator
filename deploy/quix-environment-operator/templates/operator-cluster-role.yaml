@@ -59,7 +59,11 @@ rules:
 # Allow users to execute pods for debugging
 - apiGroups: [""]
   resources: ["pods/exec", "pods/log"]
-  verbs: ["get", "list", "create"] 
+  verbs: ["get", "list", "create"]
 - apiGroups: [""]
   resources: ["pods/status"]
   verbs: ["get"]
+# Allow management of Prometheus monitoring resources for PVC metrics sidecars
+- apiGroups: ["monitoring.coreos.com"]
+  resources: ["podmonitors", "servicemonitors"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
