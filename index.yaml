@@ -68,6 +68,28 @@ entries:
     - https://github.com/quixio/quix-environment-operator/releases/download/quix-environment-operator-0.1.2/quix-environment-operator-0.1.2.tgz
     version: 0.1.2
   - apiVersion: v2
+    appVersion: 0.0.114
+    created: "2025-11-24T18:48:12.620936581Z"
+    description: A Kubernetes operator for provisioning isolated application environments
+    digest: 52c10ee537faa93211f04fe39d8d7c9d4aed64ac7eab085bb87f83b853e5b825
+    home: https://github.com/quix-analytics/quix-environment-operator
+    icon: https://quixstorageaccount.blob.core.windows.net/portal/img/quix_favicon.png
+    keywords:
+    - quix
+    - environment
+    - operator
+    - kubernetes
+    maintainers:
+    - email: devs@quix.io
+      name: Quix
+    name: quix-environment-operator
+    sources:
+    - https://github.com/quix-analytics/quix-environment-operator
+    type: application
+    urls:
+    - https://github.com/quixio/quix-environment-operator/releases/download/quix-environment-operator-0.0.114/quix-environment-operator-0.0.114.tgz
+    version: 0.0.114
+  - apiVersion: v2
     appVersion: 0.0.111
     created: "2025-11-19T00:36:26.419978057Z"
     description: A Kubernetes operator for provisioning isolated application environments
@@ -243,4 +265,4 @@ entries:
     urls:
     - https://github.com/quixio/quix-environment-operator/releases/download/quix-environment-operator-0.0.101/quix-environment-operator-0.0.101.tgz
     version: 0.0.101
-generated: "2025-11-19T00:36:26.420020998Z"
+generated: "2025-11-24T18:48:12.62098391Z"
