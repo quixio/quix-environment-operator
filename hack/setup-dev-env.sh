@@ -8,6 +8,7 @@ set -e
 # Tool Versions
 CONTROLLER_TOOLS_VERSION=v0.14.0
 GOIMPORTS_TOOLS_VERSION=v0.32.0
+SETUP_ENVTEST_VERSION=release-0.20
 ENVTEST_K8S_VERSION=1.28.0
 LOCALBIN="$(pwd)/bin"
 
@@ -41,9 +42,9 @@ if [[ ":$PATH:" != *":$HOME/go/bin:"* ]]; then
     echo "Added $HOME/go/bin to PATH"
 fi
 echo $LOCALBIN
-test -s $LOCALBIN/goimports || GOARCH=$(go env GOARCH) GOBIN=$LOCALBIN go install golang.org/x/tools/cmd/goimports@$GOIMPORTS_TOOLS_VERSION
-test -s $LOCALBIN/controller-gen || GOARCH=$(go env GOARCH) GOBIN=$LOCALBIN go install sigs.k8s.io/controller-tools/cmd/controller-gen@$CONTROLLER_TOOLS_VERSION
-test -s $LOCALBIN/setup-envtest || GOARCH=$(go env GOARCH) GOBIN=$LOCALBIN go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+test -s $LOCALBIN/goimports || GOARCH=$(go env GOARCH) GOBIN=$LOCALBIN GOTOOLCHAIN=local go install golang.org/x/tools/cmd/goimports@$GOIMPORTS_TOOLS_VERSION
+test -s $LOCALBIN/controller-gen || GOARCH=$(go env GOARCH) GOBIN=$LOCALBIN GOTOOLCHAIN=local go install sigs.k8s.io/controller-tools/cmd/controller-gen@$CONTROLLER_TOOLS_VERSION
+test -s $LOCALBIN/setup-envtest || GOARCH=$(go env GOARCH) GOBIN=$LOCALBIN GOTOOLCHAIN=local go install sigs.k8s.io/controller-runtime/tools/setup-envtest@$SETUP_ENVTEST_VERSION
 
 go mod download
 go mod tidy
