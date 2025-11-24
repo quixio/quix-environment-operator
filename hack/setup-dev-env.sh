@@ -42,9 +42,9 @@ if [[ ":$PATH:" != *":$HOME/go/bin:"* ]]; then
     echo "Added $HOME/go/bin to PATH"
 fi
 echo $LOCALBIN
-test -s $LOCALBIN/goimports || GOARCH=$(go env GOARCH) GOBIN=$LOCALBIN go install golang.org/x/tools/cmd/goimports@$GOIMPORTS_TOOLS_VERSION
-test -s $LOCALBIN/controller-gen || GOARCH=$(go env GOARCH) GOBIN=$LOCALBIN go install sigs.k8s.io/controller-tools/cmd/controller-gen@$CONTROLLER_TOOLS_VERSION
-test -s $LOCALBIN/setup-envtest || GOARCH=$(go env GOARCH) GOBIN=$LOCALBIN go install sigs.k8s.io/controller-runtime/tools/setup-envtest@$SETUP_ENVTEST_VERSION
+test -s $LOCALBIN/goimports || GOARCH=$(go env GOARCH) GOBIN=$LOCALBIN GOTOOLCHAIN=local go install golang.org/x/tools/cmd/goimports@$GOIMPORTS_TOOLS_VERSION
+test -s $LOCALBIN/controller-gen || GOARCH=$(go env GOARCH) GOBIN=$LOCALBIN GOTOOLCHAIN=local go install sigs.k8s.io/controller-tools/cmd/controller-gen@$CONTROLLER_TOOLS_VERSION
+test -s $LOCALBIN/setup-envtest || GOARCH=$(go env GOARCH) GOBIN=$LOCALBIN GOTOOLCHAIN=local go install sigs.k8s.io/controller-runtime/tools/setup-envtest@$SETUP_ENVTEST_VERSION
 
 go mod download
 go mod tidy

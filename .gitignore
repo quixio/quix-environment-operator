@@ -15,7 +15,6 @@
 /vendor/
 
 # Go modules
-/go.sum
 /go.mod.tmp
 
 # IDE/editor junk
