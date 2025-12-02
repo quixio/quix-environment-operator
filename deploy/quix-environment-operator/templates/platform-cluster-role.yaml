@@ -31,3 +31,7 @@ rules:
 - apiGroups: [""]
   resources: ["pods/status"]
   verbs: ["get"]
+# Allow management of Prometheus monitoring resources for PVC metrics sidecars
+- apiGroups: ["monitoring.coreos.com"]
+  resources: ["podmonitors", "servicemonitors"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
