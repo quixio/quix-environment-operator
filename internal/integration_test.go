@@ -1293,7 +1293,7 @@ var _ = Describe("Environment controller integration tests", func() {
 				Expect(createdNs.Labels["quix.io/managed-by"]).To(Equal("quix-environment-operator"))
 				Expect(createdNs.Labels["quix.io/environment-id"]).To(Equal("test-metadata-override"))
 				Expect(createdNs.Labels["quix.io/environment-name"]).To(Equal(env.Name))
-				Expect(createdNs.Labels["quix.io/trust-custom-ca"]).To(Equal("true"))
+				Expect(createdNs.Labels["ManagedBy"]).To(Equal("Quix"))
 
 				// Clean up
 				Expect(k8sClient.Delete(ctx, env)).Should(Succeed())
