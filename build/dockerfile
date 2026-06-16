@@ -19,9 +19,12 @@ RUN find ./api -type f -name "zz_*" -delete
 COPY config/ ./config/
 COPY LICENSE ./LICENSE
 
-# Download dependencies and generate go.sum
+# Download dependencies against the committed go.sum. No 'go mod tidy' here:
+# tidy re-resolves the graph and drifts transitive deps past the pinned
+# versions (e.g. k8s.io/apimachinery v0.36.2 needs go >= 1.26, breaking the
+# go 1.24 / GOTOOLCHAIN=local builder). go.sum is committed, so download is
+# reproducible.
 RUN go mod download
-RUN go mod tidy
 
 # Build
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 make build
