@@ -21,6 +21,8 @@ const (
 	OperatorName           = "quix-environment-operator"
 	LabelEnvironmentID     = "quix.io/environment-id"
 	LabelEnvironmentName   = "quix.io/environment-name"
+	// LabelTrustCustomCA marks namespaces for the platform trust-manager custom-CA Bundle (Quix 73259).
+	LabelTrustCustomCA = "quix.io/trust-custom-ca"
 	AnnotationCreatedBy    = "quix.io/created-by"
 	AnnotationCRDNamespace = "quix.io/environment-crd-namespace"
 	AnnotationResourceName = "quix.io/environment-resource-name"
@@ -243,6 +245,7 @@ func (m *DefaultManager) ApplyMetadata(env *v1.Environment, namespace *corev1.Na
 		ManagedByLabel:       OperatorName,
 		LabelEnvironmentID:   env.Spec.Id,
 		LabelEnvironmentName: env.Name,
+		LabelTrustCustomCA:   "true",
 	}
 
 	for key, value := range requiredLabels {
@@ -257,6 +260,7 @@ func (m *DefaultManager) ApplyMetadata(env *v1.Environment, namespace *corev1.Na
 		ManagedByLabel,
 		LabelEnvironmentID,
 		LabelEnvironmentName,
+		LabelTrustCustomCA,
 		"kubernetes.io/metadata.name",
 		"control-plane",
 	}
