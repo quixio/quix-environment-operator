@@ -21,8 +21,7 @@ const (
 	OperatorName           = "quix-environment-operator"
 	LabelEnvironmentID     = "quix.io/environment-id"
 	LabelEnvironmentName   = "quix.io/environment-name"
-	// LabelTrustCustomCA marks namespaces for custom-CA fan-out by the platform's
-	// trust-manager Bundle (Quix 73259). The Bundle's namespaceSelector matches it.
+	// LabelTrustCustomCA marks namespaces for the platform trust-manager custom-CA Bundle (Quix 73259).
 	LabelTrustCustomCA = "quix.io/trust-custom-ca"
 	AnnotationCreatedBy    = "quix.io/created-by"
 	AnnotationCRDNamespace = "quix.io/environment-crd-namespace"

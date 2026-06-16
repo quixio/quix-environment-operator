@@ -47,9 +47,6 @@ test -s $LOCALBIN/controller-gen || GOARCH=$(go env GOARCH) GOBIN=$LOCALBIN GOTO
 test -s $LOCALBIN/setup-envtest || GOARCH=$(go env GOARCH) GOBIN=$LOCALBIN GOTOOLCHAIN=local go install sigs.k8s.io/controller-runtime/tools/setup-envtest@$SETUP_ENVTEST_VERSION
 
 go mod download
-# No 'go mod tidy' here: the docker build runs setup-dev before the source is
-# copied in, so tidy would strip go.mod to nothing. go.mod/go.sum are committed
-# and complete; run 'make tidy' explicitly when changing dependencies.
 
 # Download kubebuilder assets
 echo "Downloading kubebuilder assets for testing..."
