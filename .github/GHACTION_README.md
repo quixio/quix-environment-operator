@@ -7,7 +7,7 @@ The `build.yml` workflow handles testing, building, and publishing Docker images
 1. Runs tests in Docker to ensure code quality
 2. Builds the Docker image 
 3. Pushes the Docker image to Docker Hub
-4. Packages and pushes the Helm chart as an OCI artifact
+4. Packages and publishes the Helm chart to the GitHub Pages Helm repository
 
 ### Version Handling
 
@@ -40,4 +40,4 @@ The workflow runs on:
 - Pull requests targeting the `main` branch
 - Manual trigger via GitHub UI
 
-Note: Docker image push and Helm chart push only happen on push to `main` or manual trigger, not on pull requests. 
+Note: Pull request runs use development versioning; publishing from those runs depends on the repository token and secret permissions available to the workflow.
