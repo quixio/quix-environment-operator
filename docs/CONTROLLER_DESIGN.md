@@ -35,6 +35,9 @@ The operator reconciles each managed `RoleBinding` to guarantee the configured p
 - **Platform Service Account**: Restricted to namespace-level operations through RoleBindings
 - **Validation System**: Prevents privilege escalation by validating ClusterRole permissions
 
+### `pods/exec` Grant
+The platform ClusterRole grants `pods/exec` so environment users can run commands inside their containers (`kubectl exec`) for debugging. This lets any subject bound to the platform role execute arbitrary commands inside any running container in their namespace, bypassing image-level controls; Kubernetes provides no per-call exec audit unless cluster audit-policy is configured (outside this chart). The grant is scoped to a single namespace via the per-environment RoleBinding. It is gated by the Helm value `env.allowPodsExec` (default `true` to preserve existing behavior); set it to `false` for a secure-by-default posture, which removes only the `pods/exec` rule while leaving `pods/log` and `pods/status` available for debugging.
+
 ### Metadata Controls
 - Enforces consistent labeling with prefix validation
 - Protects system labels from being overridden

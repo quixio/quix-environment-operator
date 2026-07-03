@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"os"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"github.com/quix-analytics/quix-environment-operator/internal/resources/environment"
 	"github.com/quix-analytics/quix-environment-operator/internal/resources/namespace"
 	"github.com/quix-analytics/quix-environment-operator/internal/resources/rolebinding"
+	"github.com/quix-analytics/quix-environment-operator/internal/security"
 )
 
 var (
@@ -102,6 +104,22 @@ func main() {
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
+	}
+
+	// Fail fast if the configured ClusterRole is missing or fails the safety check, before any
+	// Environment is reconciled (and before any namespace is created). Use the uncached API
+	// reader because the manager cache is not started yet. The check is bounded by a timeout so a
+	// slow or unreachable API server cannot block startup indefinitely; on failure the operator
+	// exits and Kubernetes restarts it. Per-reconcile validation in the rolebinding manager still
+	// catches external role changes after startup.
+	{
+		validateCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err := security.NewValidator(mgr.GetAPIReader()).ValidateClusterRole(validateCtx, operatorConfig.GetClusterRoleName())
+		cancel()
+		if err != nil {
+			setupLog.Error(err, "configured ClusterRole failed startup validation", "clusterRole", operatorConfig.GetClusterRoleName(), "envVar", "CLUSTER_ROLE_NAME")
+			os.Exit(1)
+		}
 	}
 
 	// Create environment manager

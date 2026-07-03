@@ -57,4 +57,11 @@ env:
 
   # Cache sync period for informers (how often controller checks for changes)
   cacheSyncPeriod: "10m"
+
+  # Grant `pods/exec` to environment users in their namespace. This enables in-container
+  # debugging (kubectl exec) but lets any user bound to the platform role run arbitrary commands
+  # inside their pods, bypassing image-level controls, with no per-call audit unless cluster
+  # audit-policy is configured. The grant is namespace-scoped via RoleBinding. Defaults to true to
+  # preserve existing behavior; set to false for a more restricted, secure-by-default posture.
+  allowPodsExec: true
   
