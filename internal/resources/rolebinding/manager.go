@@ -170,7 +170,7 @@ func (m *DefaultManager) Reconcile(ctx context.Context, env *v1.Environment) (*r
 		// the expected ServiceAccount is absent (e.g. removed or its name/namespace changed), ALL
 		// subjects are replaced with just the expected ServiceAccount. Operators who add subjects
 		// manually must not remove the expected ServiceAccount, or their additions are dropped on
-		// the next reconcile. See docs/CONTROLLER_DESIGN.md.
+		// the next reconcile. See docs/features/scoped-platform-rbac.md.
 		if len(roleBinding.Subjects) == 0 {
 			roleBinding.Subjects = []rbacv1.Subject{expectedSubject}
 			updated = true
