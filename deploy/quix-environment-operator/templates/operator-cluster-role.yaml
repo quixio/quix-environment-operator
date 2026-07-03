@@ -24,7 +24,7 @@ rules:
 # Enables the controller to manage role bindings for environment access control
 - apiGroups: ["rbac.authorization.k8s.io"]
   resources: ["rolebindings"]
-  verbs: ["get", "list", "create", "delete", "watch"]
+  verbs: ["get", "list", "create", "update", "delete", "watch"]
 # Allows access to ClusterRoles for informer caching
 # Note: This ClusterRole must be bound to the service account at namespace level using RoleBinding
 - apiGroups: ["rbac.authorization.k8s.io"]

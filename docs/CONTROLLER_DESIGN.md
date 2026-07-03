@@ -25,6 +25,9 @@ The Quix Environment Operator manages Kubernetes resources through a controller 
 - Separates controller permissions from platform permissions
 - Ensures bindings are created with proper security validations
 
+##### RoleBinding subject reconciliation contract
+The operator reconciles each managed `RoleBinding` to guarantee the configured platform `ServiceAccount` is bound. Reconciliation is stateless with respect to subjects: additional, manually-added (out-of-band) `User`/`Group`/`ServiceAccount` subjects are tolerated **only while the expected ServiceAccount is already present** in the subject list. If the expected ServiceAccount is absent — for example because the configured ServiceAccount name or namespace changed — the entire subject list is reset to just the expected ServiceAccount, and any out-of-band subjects are removed. A warning is logged listing the removed subjects when this reset occurs.
+
 ## Security Architecture
 
 ### Permission Boundaries
