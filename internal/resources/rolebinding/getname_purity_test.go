@@ -44,7 +44,7 @@ func TestDeleteDoesNotMutateStatus(t *testing.T) {
 		t.Fatalf("add core scheme: %v", err)
 	}
 	c := fake.NewClientBuilder().WithScheme(sch).Build()
-	cfg := &config.OperatorConfig{NamespaceSuffix: "-qenv"}
+	cfg := &config.OperatorConfig{NamespaceSuffix: "-qdep"}
 	nsMgr := namespace.NewManager(c, record.NewFakeRecorder(1), cfg)
 	m := NewManager(c, cfg, logr.Discard(), nsMgr)
 

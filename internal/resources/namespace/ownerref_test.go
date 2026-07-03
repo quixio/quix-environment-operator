@@ -22,7 +22,7 @@ func TestCreateSetsEnvironmentOwnerReference(t *testing.T) {
 		t.Fatalf("add core scheme: %v", err)
 	}
 	c := fake.NewClientBuilder().WithScheme(sch).Build()
-	m := NewManager(c, record.NewFakeRecorder(5), &config.OperatorConfig{NamespaceSuffix: "-qenv"})
+	m := NewManager(c, record.NewFakeRecorder(5), &config.OperatorConfig{NamespaceSuffix: "-qdep"})
 
 	env := &v1.Environment{
 		ObjectMeta: metav1.ObjectMeta{Name: "env-a", UID: "uid-123"},

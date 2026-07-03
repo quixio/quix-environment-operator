@@ -42,16 +42,12 @@ func main() {
 	var metricsAddr string
 	var enableLeaderElection bool
 	var probeAddr string
-	var configPath string
-	var syncPeriodStr string
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
-	flag.StringVar(&configPath, "config", "", "The path to the config file.")
-	flag.StringVar(&syncPeriodStr, "sync-period", "10m", "The sync period for the cache.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -68,22 +64,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Parse sync period duration
-	syncPeriod := time.Minute * 10 // Default 10 minutes
-	if syncPeriodStr != "" {
-		d, err := time.ParseDuration(syncPeriodStr)
-		if err != nil {
-			setupLog.Error(err, "unable to parse sync period", "value", syncPeriodStr)
-			os.Exit(1)
-		}
-		syncPeriod = d
+	// Surface the environment-ID regex posture: an empty regex is an optional gate that is off,
+	// leaving only the CRD's built-in id pattern in effect.
+	if operatorConfig.GetEnvironmentRegex() == "" {
+		setupLog.Info("no additional environment-ID regex configured; only the CRD id pattern applies")
+	} else {
+		setupLog.Info("environment-ID regex configured", "pattern", operatorConfig.GetEnvironmentRegex())
 	}
 
-	// Override sync period with operator config if available
-	if operatorConfig.CacheSyncPeriod != 0 {
-		syncPeriod = operatorConfig.CacheSyncPeriod
-		setupLog.Info("using configured cache sync period", "duration", syncPeriod)
-	}
+	syncPeriod := operatorConfig.GetCacheSyncPeriod()
+	setupLog.Info("using cache sync period", "duration", syncPeriod)
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
