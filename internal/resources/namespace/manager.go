@@ -33,6 +33,9 @@ type DefaultManager struct {
 	client   client.Client
 	recorder record.EventRecorder
 	config   config.ConfigProvider
+	// envIdRegexp is the compiled environment ID validation pattern, or nil when no regex is
+	// configured. The pattern is immutable startup config, so it is compiled once here.
+	envIdRegexp *regexp.Regexp
 }
 
 // NewManager creates a new default namespace manager
@@ -41,11 +44,20 @@ func NewManager(
 	recorder record.EventRecorder,
 	config config.ConfigProvider,
 ) *DefaultManager {
-	return &DefaultManager{
+	m := &DefaultManager{
 		client:   client,
 		recorder: recorder,
 		config:   config,
 	}
+	// Compile the immutable environment ID regex once. The pattern is validated compilable at
+	// config load, so a compile error here is unreachable; leave envIdRegexp nil and fall back
+	// to per-call compilation defensively rather than changing the constructor signature.
+	if pattern := config.GetEnvironmentRegex(); pattern != "" {
+		if compiled, err := regexp.Compile(pattern); err == nil {
+			m.envIdRegexp = compiled
+		}
+	}
+	return m
 }
 
 // Exists checks if a namespace exists for an environment
@@ -472,10 +484,16 @@ func (m *DefaultManager) isValidEnvironmentId(envId string) (bool, error) {
 		return true, nil
 	}
 
-	// Compile the regex pattern
-	pattern, err := regexp.Compile(m.config.GetEnvironmentRegex())
-	if err != nil {
-		return false, fmt.Errorf("invalid environment regex pattern: %w", err)
+	// Use the pattern compiled once at construction. It is nil only in the unreachable case where
+	// the pre-validated pattern failed to compile there; fall back to per-call compilation so
+	// validation semantics are preserved.
+	pattern := m.envIdRegexp
+	if pattern == nil {
+		var err error
+		pattern, err = regexp.Compile(m.config.GetEnvironmentRegex())
+		if err != nil {
+			return false, fmt.Errorf("invalid environment regex pattern: %w", err)
+		}
 	}
 
 	// Check if the environment ID matches the pattern
@@ -486,7 +504,7 @@ func (m *DefaultManager) isValidEnvironmentId(envId string) (bool, error) {
 func (m *DefaultManager) Reconcile(ctx context.Context, env *v1.Environment) (*corev1.Namespace, error) {
 	namespaceName := m.GetNamespaceName(env)
 	logger := log.FromContext(ctx).WithValues("namespace", namespaceName)
-	logger.Info("Reconciling namespace")
+	logger.V(1).Info("Reconciling namespace")
 
 	// Check if namespace exists
 	exists, err := m.Exists(ctx, env)

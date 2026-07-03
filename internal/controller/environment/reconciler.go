@@ -181,8 +181,6 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				}
 			}
 
-			r.recorder.Event(environment, corev1.EventTypeNormal, "NamespaceCreated", "Created namespace for environment")
-
 			// Update RoleBinding status to Creating if not already set
 			if environment.Status.RoleBindingStatus == nil || environment.Status.RoleBindingStatus.Phase == "" {
 				initResourceStatus(&environment.Status.RoleBindingStatus, v1.ResourceStatusPhaseCreating, "Creating role binding")
@@ -405,6 +403,7 @@ func (r *EnvironmentReconciler) handleDeletion(ctx context.Context, env *v1.Envi
 	// This is a no-op if the role binding doesn't exist anymore
 	if err := r.roleBindingManager.Delete(ctx, env); err != nil {
 		logger.Error(err, "Failed to delete role binding")
+		r.recorder.Event(env, corev1.EventTypeWarning, "RoleBindingDeletionFailed", "Failed to delete role binding")
 		// Log error but continue to namespace deletion
 	}
 
@@ -419,7 +418,10 @@ func (r *EnvironmentReconciler) handleDeletion(ctx context.Context, env *v1.Envi
 
 	if exists {
 		// Check if namespace is already being deleted
-		isDeleting, _ := r.namespaceManager.IsDeleting(ctx, env)
+		isDeleting, err := r.namespaceManager.IsDeleting(ctx, env)
+		if err != nil {
+			logger.Error(err, "Failed to check if namespace is deleting; assuming it is not")
+		}
 		if !isDeleting {
 			// Namespace exists and is not being deleted, so delete it
 			logger.V(0).Info("Deleting namespace", "namespace", namespaceName)
@@ -500,9 +502,9 @@ func (r *EnvironmentReconciler) handleDeletion(ctx context.Context, env *v1.Envi
 // updateStatus updates the environment status
 func (r *EnvironmentReconciler) updateStatus(ctx context.Context, env *v1.Environment, phase v1.EnvironmentPhase, message string) error {
 	logger := r.logger.WithValues("environment", env.Name)
-	logger.V(0).Info("Updating environment status", "phase", phase, "message", message)
 
 	if env.Status.Phase != phase || env.Status.Message != message {
+		logger.V(0).Info("Updating environment status", "phase", phase, "message", message)
 		// Update status fields
 		env.Status.Phase = phase
 		env.Status.Message = message

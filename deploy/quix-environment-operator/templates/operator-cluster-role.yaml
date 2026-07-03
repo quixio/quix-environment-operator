@@ -36,6 +36,10 @@ rules:
 - apiGroups: [""]
   resources: ["events"]
   verbs: ["create", "patch"]
+# Enables leader election (--leader-elect) via coordination Leases so only one replica reconciles
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 # Grants the operator permission to bind the platform ClusterRole to namespace service accounts.
 # Kubernetes privilege-escalation prevention requires the binder to either hold every permission
 # the bound role grants or have the bind verb on it. We take the least-privilege path: bind only,
