@@ -64,4 +64,28 @@ env:
   # audit-policy is configured. The grant is namespace-scoped via RoleBinding. Defaults to true to
   # preserve existing behavior; set to false for a more restricted, secure-by-default posture.
   allowPodsExec: true
-  
+
+# Network exposure of the operator's own endpoints.
+# The metrics (8080) and health (8081) endpoints bind to all interfaces by default and are
+# unauthenticated. To lock them down you can either bind them to localhost (see metrics/health
+# below) or restrict ingress with the NetworkPolicy below (preferred when monitoring scrapes them).
+metrics:
+  # Address the controller binds its metrics endpoint to. Use "127.0.0.1:8080" to disable remote
+  # scraping entirely, or ":8080" to expose on all interfaces (default).
+  bindAddress: ":8080"
+health:
+  # Address the controller binds its health/probe endpoint to. Keep reachable by the kubelet.
+  bindAddress: ":8081"
+
+networkPolicy:
+  # Opt-in (default false to preserve behavior). When true, ingress to the metrics/health ports is
+  # restricted to the sources listed in monitoringSources.
+  enabled: false
+  # NetworkPolicy peer entries (from:) allowed to reach ports 8080/8081, e.g.:
+  #   - namespaceSelector:
+  #       matchLabels:
+  #         kubernetes.io/metadata.name: monitoring
+  #     podSelector:
+  #       matchLabels:
+  #         app.kubernetes.io/name: prometheus
+  monitoringSources: []
