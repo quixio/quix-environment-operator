@@ -165,6 +165,12 @@ func (m *DefaultManager) Reconcile(ctx context.Context, env *v1.Environment) (*r
 
 		expectedSubject := m.expectedSubject()
 
+		// Subject reconciliation contract (intentionally stateless): manually-added subjects are
+		// preserved ONLY while the expected ServiceAccount is still present among the subjects. If
+		// the expected ServiceAccount is absent (e.g. removed or its name/namespace changed), ALL
+		// subjects are replaced with just the expected ServiceAccount. Operators who add subjects
+		// manually must not remove the expected ServiceAccount, or their additions are dropped on
+		// the next reconcile. See docs/CONTROLLER_DESIGN.md.
 		if len(roleBinding.Subjects) == 0 {
 			roleBinding.Subjects = []rbacv1.Subject{expectedSubject}
 			updated = true

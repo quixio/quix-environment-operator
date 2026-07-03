@@ -16,7 +16,7 @@ The Quix Environment Operator manages Kubernetes resources through a controller 
 
 #### Namespace Orchestration
 - Creates and manages dedicated namespaces for each environment
-- Applies consistent naming pattern with configurable suffix
+- Applies consistent naming pattern with configurable suffix. The `Environment` `spec.id` must be 3-44 characters, lowercase alphanumeric (`a-z`, `0-9`) with optional internal hyphens, and must start and end with an alphanumeric character (regex `^[a-z0-9]([a-z0-9\-]*[a-z0-9])?$`); the namespace name is the `id` combined with the configured suffix
 - Handles metadata propagation from Environment specs
 - Manages deletion with finalizers to ensure proper cleanup
 
@@ -31,9 +31,12 @@ The operator reconciles each managed `RoleBinding` to guarantee the configured p
 ## Security Architecture
 
 ### Permission Boundaries
-- **Controller Service Account**: Limited to minimum required cluster-level permissions
+- **Controller Service Account**: Limited to the cluster-level permissions the controller itself uses (managing `environments`, `namespaces`, `rolebindings`, and reading `clusterroles`), plus the `bind` verb on the configured platform `ClusterRole`.
 - **Platform Service Account**: Restricted to namespace-level operations through RoleBindings
 - **Validation System**: Prevents privilege escalation by validating ClusterRole permissions
+
+#### Operator ClusterRole privilege footprint
+The operator ClusterRole (`deploy/quix-environment-operator/templates/operator-cluster-role.yaml`) deliberately does **not** mirror the full platform permission set. Kubernetes privilege-escalation prevention requires a subject that creates a RoleBinding to either already hold every permission the bound role grants, or to hold the `bind` verb on that role. The operator takes the least-privilege path: it is granted only `bind` on the configured platform `ClusterRole`, so it can create the per-environment RoleBindings that grant workloads the platform permissions **without itself holding those workload permissions**. The workload permission set lives solely in the platform `ClusterRole` (`platform-cluster-role.yaml`); the operator role references it by name via the `bind` grant rather than duplicating its rules. A security reviewer should therefore read the operator's footprint as "operational permissions + `bind` on one named ClusterRole", not as the union of all platform workload permissions.
 
 ### `pods/exec` Grant
 The platform ClusterRole grants `pods/exec` so environment users can run commands inside their containers (`kubectl exec`) for debugging. This lets any subject bound to the platform role execute arbitrary commands inside any running container in their namespace, bypassing image-level controls; Kubernetes provides no per-call exec audit unless cluster audit-policy is configured (outside this chart). The grant is scoped to a single namespace via the per-environment RoleBinding. It is gated by the Helm value `env.allowPodsExec` (default `true` to preserve existing behavior); set it to `false` for a secure-by-default posture, which removes only the `pods/exec` rule while leaving `pods/log` and `pods/status` available for debugging.

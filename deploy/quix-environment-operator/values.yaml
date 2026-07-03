@@ -43,7 +43,9 @@ env:
   # Namespace suffix for provisioned environments (will be appended to environment name)
   namespaceSuffix: "-qdep"
   
-  # Environment ID validation regex
+  # Environment ID validation regex. OPTIONAL additional constraint applied on top of the CRD's
+  # built-in id pattern. Empty (the default) means "CRD pattern only" — any ID the CRD accepts
+  # passes; it adds no extra runtime gate (it does not disable the CRD pattern).
   environmentRegex: ""
   
   # ServiceAccount for RoleBindings

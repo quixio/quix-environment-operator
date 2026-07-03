@@ -7,7 +7,7 @@ A Kubernetes controller for secure, declarative provisioning of isolated applica
 ## Features
 
 - Declarative environment definition via custom `Environment` resource
-- Automated namespace creation with strict naming conventions
+- Automated namespace creation with strict naming conventions. The `Environment` `spec.id` must be 3-44 characters, lowercase alphanumeric (`a-z`, `0-9`) with optional internal hyphens, and must start and end with an alphanumeric character (regex `^[a-z0-9]([a-z0-9\-]*[a-z0-9])?$`). The `id` is combined with the configured suffix to generate the namespace name.
 - Centralized ServiceAccounts with precise permissions
 - Audit-friendly event emission
 - Namespace-scoped actions with least-privilege security
@@ -32,6 +32,22 @@ helm pull quix-environment-operator/quix-environment-operator --version $operato
 helm upgrade --install quix-environment-operator -n quix-operator --create-namespace ./quix-environment-operator-$operator_version.tgz --set env.environmentRegex="$operator_env_regex"
 ```
 For all configuration options see [values.yaml](deploy/quix-environment-operator/values.yaml).
+
+## Configuration
+
+The chart's behavior is configured through `env.*` Helm values (override with `--set env.<key>=<value>`). The key options:
+
+| Helm key | Description | Default |
+|----------|-------------|---------|
+| `env.namespaceSuffix` | Suffix appended to an environment's ID to form its managed namespace name. | `-qdep` |
+| `env.environmentRegex` | Regex an environment ID must match to be accepted. Empty means all IDs are valid. | `""` |
+| `env.serviceAccountName` | Name of the platform ServiceAccount bound into each managed namespace via RoleBinding. | `quix-platform-account` |
+| `env.serviceAccountNameSpace` | Namespace of the platform ServiceAccount. Defaults to the release namespace when unset. | _(release namespace)_ |
+| `env.clusterRoleName` | Name of the platform ClusterRole bound into each managed namespace. | `quix-platform-account-role` |
+| `env.cacheSyncPeriod` | How often the controller's informer cache resyncs. | `10m` |
+| `env.allowPodsExec` | Whether the platform ClusterRole grants `pods/exec` to environment users. Set to `false` for a more restricted posture. | `true` |
+
+For the complete, authoritative list see [values.yaml](deploy/quix-environment-operator/values.yaml).
 
 ## Development
 

@@ -7,7 +7,9 @@ type OperatorConfig struct {
 	// NamespaceSuffix is the suffix to use for creating namespaces
 	NamespaceSuffix string
 
-	// EnvironmentRegex is the regex pattern that environment IDs must match
+	// EnvironmentRegex is an OPTIONAL additional regex an environment ID must match, applied on
+	// top of the CRD's built-in id pattern. Empty disables the extra runtime constraint (the CRD
+	// pattern still applies).
 	EnvironmentRegex string
 
 	// ServiceAccountName is the name of the ServiceAccount to bind to RoleBindings
