@@ -3,17 +3,25 @@ package environment
 import (
 	"context"
 	"testing"
+	"time"
 
 	v1 "github.com/quix-analytics/quix-environment-operator/api/v1"
+	"github.com/quix-analytics/quix-environment-operator/internal/config"
+	"github.com/quix-analytics/quix-environment-operator/internal/resources/rolebinding"
+	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 type recordingEnvironmentManager struct {
 	updateCount int
+	env         *v1.Environment
 }
 
 func (m *recordingEnvironmentManager) Get(context.Context, string) (*v1.Environment, error) {
-	return nil, nil
+	return m.env, nil
 }
 
 func (m *recordingEnvironmentManager) GetList(context.Context) (*v1.EnvironmentList, error) {
@@ -38,7 +46,51 @@ func (m *recordingEnvironmentManager) IsBeingDeleted(*v1.Environment) bool {
 }
 
 func (m *recordingEnvironmentManager) HasFinalizer(*v1.Environment, string) bool {
-	return false
+	return true
+}
+
+type readyNamespaceManager struct{}
+
+func (m readyNamespaceManager) GetNamespaceName(env *v1.Environment) string {
+	return env.Spec.Id + "-qdep"
+}
+
+func (m readyNamespaceManager) Delete(context.Context, *v1.Environment) error {
+	return nil
+}
+
+func (m readyNamespaceManager) Get(context.Context, *v1.Environment) (*corev1.Namespace, error) {
+	return &corev1.Namespace{}, nil
+}
+
+func (m readyNamespaceManager) Exists(context.Context, *v1.Environment) (bool, error) {
+	return true, nil
+}
+
+func (m readyNamespaceManager) IsDeleting(context.Context, *v1.Environment) (bool, error) {
+	return false, nil
+}
+
+func (m readyNamespaceManager) Reconcile(context.Context, *v1.Environment) (*corev1.Namespace, error) {
+	return &corev1.Namespace{}, nil
+}
+
+type pendingRoleBindingManager struct{}
+
+func (m pendingRoleBindingManager) Delete(context.Context, *v1.Environment) error {
+	return nil
+}
+
+func (m pendingRoleBindingManager) GetName(env *v1.Environment) string {
+	return env.Spec.Id + "-quix-crb"
+}
+
+func (m pendingRoleBindingManager) Exists(context.Context, *v1.Environment) (bool, error) {
+	return true, nil
+}
+
+func (m pendingRoleBindingManager) Reconcile(context.Context, *v1.Environment) (*rbacv1.RoleBinding, error) {
+	return nil, rolebinding.ErrRoleBindingRecreatePending
 }
 
 func TestUpdateStatusReadyRecoversFailedSubResourceStatuses(t *testing.T) {
@@ -102,5 +154,58 @@ func TestUpdateStatusFailedDoesNotInferSubResourceFromMessageText(t *testing.T) 
 	}
 	if env.Status.RoleBindingStatus.Phase != v1.ResourceStatusPhaseActive {
 		t.Fatalf("expected role binding status to remain Active until explicit caller attribution, got %q", env.Status.RoleBindingStatus.Phase)
+	}
+}
+
+func TestReconcileRoleBindingRecreatePendingClearsReadyPhase(t *testing.T) {
+	assertRoleBindingRecreatePendingPhase(t, v1.EnvironmentPhaseReady)
+}
+
+func TestReconcileRoleBindingRecreatePendingClearsFailedPhase(t *testing.T) {
+	assertRoleBindingRecreatePendingPhase(t, v1.EnvironmentPhaseFailed)
+}
+
+func assertRoleBindingRecreatePendingPhase(t *testing.T, initialPhase v1.EnvironmentPhase) {
+	t.Helper()
+	env := &v1.Environment{
+		ObjectMeta: metav1.ObjectMeta{Name: "pending-status", Generation: 3},
+		Spec:       v1.EnvironmentSpec{Id: "pending"},
+		Status: v1.EnvironmentStatus{
+			Phase: initialPhase,
+			NamespaceStatus: &v1.ResourceStatus{
+				Phase:        v1.ResourceStatusPhaseActive,
+				Message:      "Namespace is active",
+				ResourceName: "pending-qdep",
+			},
+			RoleBindingStatus: &v1.ResourceStatus{
+				Phase:        v1.ResourceStatusPhaseActive,
+				Message:      "RoleBinding is active",
+				ResourceName: "pending-quix-crb",
+			},
+		},
+	}
+	envManager := &recordingEnvironmentManager{env: env}
+	reconciler := &EnvironmentReconciler{
+		environmentManager: envManager,
+		operatorConfig:     &config.OperatorConfig{MaxConcurrentReconciles: 1},
+		namespaceManager:   readyNamespaceManager{},
+		roleBindingManager: pendingRoleBindingManager{},
+	}
+
+	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: env.Name}})
+	if err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+	if !result.Requeue || result.RequeueAfter != time.Second {
+		t.Fatalf("expected one-second requeue, got %+v", result)
+	}
+	if env.Status.Phase != v1.EnvironmentPhaseInProgress {
+		t.Fatalf("expected Environment phase InProgress, got %q", env.Status.Phase)
+	}
+	if env.Status.RoleBindingStatus.Phase != v1.ResourceStatusPhaseCreating {
+		t.Fatalf("expected RoleBindingStatus Creating, got %q", env.Status.RoleBindingStatus.Phase)
+	}
+	if envManager.updateCount != 1 {
+		t.Fatalf("expected one pending status update, got %d", envManager.updateCount)
 	}
 }

@@ -290,6 +290,24 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// Reconcile the role binding - this handles creation or updates as needed
 	_, err = r.roleBindingManager.Reconcile(ctx, environment)
 	if err != nil {
+		if stderrors.Is(err, rolebinding.ErrRoleBindingRecreatePending) {
+			setResourceNameIfEmpty(&environment.Status.RoleBindingStatus, r.roleBindingManager.GetName(environment))
+			if environment.Status.RoleBindingStatus != nil {
+				environment.Status.Phase = v1.EnvironmentPhaseInProgress
+				environment.Status.Message = "RoleBinding recreate in progress"
+				environment.Status.LastUpdated = metav1.Now()
+				if environment.Status.ObservedGeneration != environment.Generation {
+					environment.Status.ObservedGeneration = environment.Generation
+				}
+				environment.Status.RoleBindingStatus.Phase = v1.ResourceStatusPhaseCreating
+				environment.Status.RoleBindingStatus.Message = "Waiting for role binding RoleRef update"
+				if statusErr := r.environmentManager.UpdateStatus(ctx, environment); statusErr != nil {
+					logger.Error(statusErr, "failed to persist role binding pending status after recreate collision")
+				}
+			}
+			return ctrl.Result{Requeue: true, RequeueAfter: time.Second}, nil
+		}
+
 		r.recorder.Event(environment, corev1.EventTypeWarning, "RoleBindingReconciliationFailed", "Failed to reconcile role binding")
 
 		// Persist the role binding name so deletion can rely on the stored value.

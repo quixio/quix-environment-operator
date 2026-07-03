@@ -2,6 +2,7 @@ package rolebinding
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 
 	"github.com/go-logr/logr"
@@ -17,6 +18,8 @@ import (
 )
 
 const ManagedByValue = "environment-operator"
+
+var ErrRoleBindingRecreatePending = stderrors.New("role binding recreate pending")
 
 // DefaultManager implements the Manager interface
 type DefaultManager struct {
@@ -216,15 +219,22 @@ func (m *DefaultManager) Reconcile(ctx context.Context, env *v1.Environment) (*r
 			m.logger.V(0).Info("Recreating role binding with updated RoleRef", "name", rbName, "namespace", namespace)
 			if err := m.client.Create(ctx, roleBinding); err != nil {
 				if errors.IsAlreadyExists(err) {
-					existingRoleBinding := &rbacv1.RoleBinding{}
-					if getErr := m.client.Get(ctx, types.NamespacedName{Name: rbName, Namespace: namespace}, existingRoleBinding); getErr != nil {
+					if getErr := m.client.Get(ctx, types.NamespacedName{Name: rbName, Namespace: namespace}, roleBinding); getErr != nil {
 						return nil, fmt.Errorf("failed to get existing role binding after recreate AlreadyExists error: %w", getErr)
 					}
-					if existingRoleBinding.RoleRef.Name == expectedRoleRef.Name &&
-						existingRoleBinding.RoleRef.Kind == expectedRoleRef.Kind &&
-						existingRoleBinding.RoleRef.APIGroup == expectedRoleRef.APIGroup {
-						return existingRoleBinding, nil
+					if roleBinding.RoleRef.Name != expectedRoleRef.Name ||
+						roleBinding.RoleRef.Kind != expectedRoleRef.Kind ||
+						roleBinding.RoleRef.APIGroup != expectedRoleRef.APIGroup {
+						return nil, fmt.Errorf("%w: role binding %s/%s still has RoleRef %s/%s/%s",
+							ErrRoleBindingRecreatePending,
+							namespace,
+							rbName,
+							roleBinding.RoleRef.APIGroup,
+							roleBinding.RoleRef.Kind,
+							roleBinding.RoleRef.Name)
 					}
+					updated = false
+					return roleBinding, nil
 				}
 				return nil, fmt.Errorf("failed to recreate role binding: %w", err)
 			}
