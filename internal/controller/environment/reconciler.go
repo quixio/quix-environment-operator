@@ -118,6 +118,11 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		if err := r.updateStatus(ctx, environment, v1.EnvironmentPhaseInProgress, "Processing environment"); err != nil {
 			return ctrl.Result{}, err
 		}
+		// Unlike the Deleting transition in handleDeletion, this InProgress transition does not
+		// requeue and intentionally continues processing in the same reconcile: updateStatus ->
+		// UpdateStatus advances the in-memory object's ResourceVersion (see resources/environment
+		// manager.go), so the object is not stale, and proceeding straight to namespace/RoleBinding
+		// reconciliation avoids an extra reconcile cycle on every fresh Environment.
 	}
 
 	// Check for deletion and handle finalizer
@@ -332,14 +337,14 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{RequeueAfter: RequeueDelay}, nil
+	return ctrl.Result{}, nil
 }
 
 // syncObservedGeneration advances status.observedGeneration to the current metadata.generation
 // when it lags. It modifies only observedGeneration (other status fields are persisted with
 // their current in-memory values, unchanged) and is a no-op (no API write) when the two are
 // already equal — so when updateStatus already synced observedGeneration in this reconcile, or on
-// steady-state RequeueAfter cycles, no extra status write is issued.
+// later watch/cache-triggered reconciles, no extra status write is issued.
 func (r *EnvironmentReconciler) syncObservedGeneration(ctx context.Context, env *v1.Environment) error {
 	if env.Status.ObservedGeneration == env.Generation {
 		return nil

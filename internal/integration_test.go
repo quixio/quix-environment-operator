@@ -1017,6 +1017,28 @@ var _ = Describe("Environment controller integration tests", func() {
 			}, deletionTimeout, interval).Should(BeTrue(), "Namespace deletion was not initiated")
 		})
 
+		It("Should not requeue an unchanged Ready Environment", func() {
+			ctx := context.Background()
+
+			env := createIntegrationTestEnvironment("test-no-steady-requeue", nil, nil)
+			Expect(k8sClient.Create(ctx, env)).Should(Succeed())
+
+			envLookupKey := types.NamespacedName{Name: env.Name, Namespace: testNamespace}
+			Eventually(func() quixiov1.EnvironmentPhase {
+				createdEnv := &quixiov1.Environment{}
+				if err := k8sClient.Get(ctx, envLookupKey, createdEnv); err != nil {
+					return ""
+				}
+				return createdEnv.Status.Phase
+			}, timeout, interval).Should(Equal(quixiov1.EnvironmentPhaseReady))
+
+			result, err := Controller.Reconcile(ctx, ctrl.Request{NamespacedName: envLookupKey})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(ctrl.Result{}))
+
+			Expect(k8sClient.Delete(ctx, env)).Should(Succeed())
+		})
+
 		It("Should handle deletion when namespace is not managed by operator", func() {
 			ctx := context.Background()
 
