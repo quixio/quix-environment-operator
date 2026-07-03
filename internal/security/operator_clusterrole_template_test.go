@@ -36,12 +36,9 @@ func TestOperatorClusterRoleTemplateRoleBindingVerbs(t *testing.T) {
 		verbsLine = verbsLine[:end]
 	}
 
-	for _, verb := range []string{`"get"`, `"create"`, `"update"`, `"delete"`, `"watch"`} {
+	for _, verb := range []string{`"get"`, `"list"`, `"create"`, `"update"`, `"delete"`, `"watch"`} {
 		if !strings.Contains(verbsLine, verb) {
 			t.Fatalf("rolebindings rule missing required verb %s in %s", verb, verbsLine)
 		}
-	}
-	if strings.Contains(verbsLine, `"list"`) {
-		t.Fatalf("rolebindings rule should not reintroduce unused list verb: %s", verbsLine)
 	}
 }

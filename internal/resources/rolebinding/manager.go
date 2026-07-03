@@ -16,6 +16,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+const ManagedByValue = "environment-operator"
+
 // DefaultManager implements the Manager interface
 type DefaultManager struct {
 	client            client.Client
@@ -213,6 +215,17 @@ func (m *DefaultManager) Reconcile(ctx context.Context, env *v1.Environment) (*r
 
 			m.logger.V(0).Info("Recreating role binding with updated RoleRef", "name", rbName, "namespace", namespace)
 			if err := m.client.Create(ctx, roleBinding); err != nil {
+				if errors.IsAlreadyExists(err) {
+					existingRoleBinding := &rbacv1.RoleBinding{}
+					if getErr := m.client.Get(ctx, types.NamespacedName{Name: rbName, Namespace: namespace}, existingRoleBinding); getErr != nil {
+						return nil, fmt.Errorf("failed to get existing role binding after recreate AlreadyExists error: %w", getErr)
+					}
+					if existingRoleBinding.RoleRef.Name == expectedRoleRef.Name &&
+						existingRoleBinding.RoleRef.Kind == expectedRoleRef.Kind &&
+						existingRoleBinding.RoleRef.APIGroup == expectedRoleRef.APIGroup {
+						return existingRoleBinding, nil
+					}
+				}
 				return nil, fmt.Errorf("failed to recreate role binding: %w", err)
 			}
 
@@ -234,9 +247,9 @@ func (m *DefaultManager) Reconcile(ctx context.Context, env *v1.Environment) (*r
 // managed-by value is the literal "environment-operator" used for RoleBinding labels.
 func (m *DefaultManager) expectedLabels(env *v1.Environment) map[string]string {
 	return map[string]string{
-		"quix.io/environment-id":   env.Spec.Id,
-		"quix.io/managed-by":       "environment-operator",
-		"quix.io/environment-name": env.Name,
+		namespace.LabelEnvironmentID:   env.Spec.Id,
+		namespace.ManagedByLabel:       ManagedByValue,
+		namespace.LabelEnvironmentName: env.Name,
 	}
 }
 

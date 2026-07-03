@@ -14,16 +14,20 @@ import (
 	"github.com/quix-analytics/quix-environment-operator/internal/resources/rolebinding"
 	"github.com/quix-analytics/quix-environment-operator/internal/security"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 const (
@@ -593,6 +597,21 @@ func (r *EnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// Use a predicate that ignores namespace fields for cluster-scoped resources
 		For(&v1.Environment{}, builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		Owns(&corev1.Namespace{}).
+		Watches(&rbacv1.RoleBinding{}, handler.EnqueueRequestsFromMapFunc(mapRoleBindingToEnvironment)).
 		WithOptions(controller.Options{MaxConcurrentReconciles: max(1, r.operatorConfig.MaxConcurrentReconciles)}).
 		Complete(r)
+}
+func mapRoleBindingToEnvironment(_ context.Context, obj client.Object) []reconcile.Request {
+	labels := obj.GetLabels()
+	if labels[namespace.ManagedByLabel] != rolebinding.ManagedByValue {
+		return nil
+	}
+
+	envName := labels[namespace.LabelEnvironmentName]
+	envID := labels[namespace.LabelEnvironmentID]
+	if envName == "" || envID == "" {
+		return nil
+	}
+
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: envName}}}
 }

@@ -1017,6 +1017,53 @@ var _ = Describe("Environment controller integration tests", func() {
 			}, deletionTimeout, interval).Should(BeTrue(), "Namespace deletion was not initiated")
 		})
 
+		It("Should recreate a managed RoleBinding deleted out of band", func() {
+			ctx := context.Background()
+
+			env := createIntegrationTestEnvironment("test-rb-drift", nil, nil)
+			Expect(k8sClient.Create(ctx, env)).Should(Succeed())
+
+			nsName := fmt.Sprintf("%s%s", env.Spec.Id, Config.NamespaceSuffix)
+			rbLookupKey := types.NamespacedName{
+				Name:      fmt.Sprintf("%s-quix-crb", env.Spec.Id),
+				Namespace: nsName,
+			}
+			envLookupKey := types.NamespacedName{Name: env.Name, Namespace: testNamespace}
+
+			Eventually(func() quixiov1.EnvironmentPhase {
+				createdEnv := &quixiov1.Environment{}
+				if err := k8sClient.Get(ctx, envLookupKey, createdEnv); err != nil {
+					return ""
+				}
+				return createdEnv.Status.Phase
+			}, timeout, interval).Should(Equal(quixiov1.EnvironmentPhaseReady))
+
+			rb := &rbacv1.RoleBinding{}
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, rbLookupKey, rb)
+				return IsRoleBindingValid(rb, err, Config.ClusterRoleName,
+					Config.ServiceAccountName,
+					Config.ServiceAccountNamespace)
+			}, timeout, interval).Should(BeTrue(), "RoleBinding not correctly configured before drift")
+			Expect(rb.Labels["quix.io/managed-by"]).To(Equal(rolebindingresource.ManagedByValue), "Managed-by label is incorrect")
+			originalUID := rb.UID
+
+			Expect(k8sClient.Delete(ctx, rb)).Should(Succeed())
+
+			Eventually(func() types.UID {
+				recreated := &rbacv1.RoleBinding{}
+				err := k8sClient.Get(ctx, rbLookupKey, recreated)
+				if !IsRoleBindingValid(recreated, err, Config.ClusterRoleName,
+					Config.ServiceAccountName,
+					Config.ServiceAccountNamespace) {
+					return ""
+				}
+				return recreated.UID
+			}, 750*time.Millisecond, 50*time.Millisecond).ShouldNot(Equal(originalUID), "RoleBinding was not recreated from its watch event")
+
+			Expect(k8sClient.Delete(ctx, env)).Should(Succeed())
+		})
+
 		It("Should not requeue an unchanged Ready Environment", func() {
 			ctx := context.Background()
 
