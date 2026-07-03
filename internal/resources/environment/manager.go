@@ -83,7 +83,14 @@ func (m *DefaultManager) AddFinalizer(ctx context.Context, env *v1.Environment, 
 	return m.update(ctx, env)
 }
 
-// RemoveFinalizer removes a finalizer from an environment
+// RemoveFinalizer removes a finalizer from an environment.
+//
+// Returning nil when the finalizer is absent (the no-op path below) is safe because the
+// reconciler now adds the finalizer at the very top of Reconcile — before any status
+// mutation and before any managed resource (namespace, RoleBinding) is created. An object
+// reaching deletion therefore always carries the finalizer when managed resources exist, so
+// a missing finalizer here means there is nothing left to clean up. This keeps deletion
+// reconciles idempotent without risking orphaned resources.
 func (m *DefaultManager) RemoveFinalizer(ctx context.Context, env *v1.Environment, finalizerName string) error {
 	if !containsString(env.Finalizers, finalizerName) {
 		return nil

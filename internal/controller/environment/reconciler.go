@@ -87,6 +87,25 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, fmt.Errorf("error retrieving environment: %w", err)
 	}
 
+	// Add the finalizer before any status mutation or deletion handling, so the
+	// deletion handler is guaranteed to run and managed resources are never orphaned.
+	// Guard with the deletion timestamp: a deleting object skips finalizer addition (the
+	// API server rejects adding a finalizer to an object marked for deletion) and falls
+	// through to handleDeletion below. On success we requeue so the next pass re-fetches
+	// the persisted object (carrying the finalizer) before creating any namespace or
+	// RoleBinding.
+	//
+	// Invariant: the finalizer is persisted before any managed resource (namespace/
+	// RoleBinding) is created. This is what lets RemoveFinalizer no-op safely when the
+	// finalizer is absent (see resources/environment/manager.go RemoveFinalizer).
+	if environment.GetDeletionTimestamp() == nil && !r.environmentManager.HasFinalizer(environment, EnvironmentFinalizer) {
+		if err := r.environmentManager.AddFinalizer(ctx, environment, EnvironmentFinalizer); err != nil {
+			logger.Error(err, "Failed to add finalizer")
+			return ctrl.Result{Requeue: true}, err
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
+
 	if environment.Status.Phase == "" {
 		if err := r.updateStatus(ctx, environment, v1.EnvironmentPhaseInProgress, "Processing environment"); err != nil {
 			return ctrl.Result{}, err
@@ -96,15 +115,6 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// Check for deletion and handle finalizer
 	if environment.GetDeletionTimestamp() != nil {
 		return r.handleDeletion(ctx, environment)
-	}
-
-	// Add the finalizer if it doesn't exist
-	if !r.environmentManager.HasFinalizer(environment, EnvironmentFinalizer) {
-		if err := r.environmentManager.AddFinalizer(ctx, environment, EnvironmentFinalizer); err != nil {
-			logger.Error(err, "Failed to add finalizer")
-			return ctrl.Result{Requeue: true}, err
-		}
-		return ctrl.Result{Requeue: true}, nil
 	}
 
 	// Check if namespace exists
@@ -127,8 +137,8 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				r.recorder.Event(environment, corev1.EventTypeWarning, "NamespaceCreationFailed", "Failed to create namespace")
 				logger.Error(err, "error creating namespace", "environment", environment.Name)
 
-				// This should cause the namespace to be set in environment status
-				_ = r.namespaceManager.GetNamespaceName(environment)
+				// Persist the namespace name so deletion can rely on the stored value
+				setResourceNameIfEmpty(&environment.Status.NamespaceStatus, r.namespaceManager.GetNamespaceName(environment))
 
 				// Update namespace status to Failed, but only if not already set to Failed
 				if environment.Status.NamespaceStatus != nil {
@@ -146,10 +156,17 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			if environment.Status.NamespaceStatus != nil {
 				updateResourceStatusIfCreating(environment.Status.NamespaceStatus, v1.ResourceStatusPhaseActive, "Namespace created successfully")
 
-				// Set the namespace name on the NamespaceStatus resource if not already set
-				_ = r.namespaceManager.GetNamespaceName(environment)
+				// Set the namespace name on the NamespaceStatus resource if not already set.
+				// The name was just newly computed for a created namespace, so persisting it
+				// is required to avoid orphaning the namespace; fail closed if persistence fails.
+				newName := setResourceNameIfEmpty(&environment.Status.NamespaceStatus, r.namespaceManager.GetNamespaceName(environment))
 
-				_ = r.environmentManager.UpdateStatus(ctx, environment)
+				if err := r.environmentManager.UpdateStatus(ctx, environment); err != nil {
+					if newName {
+						return ctrl.Result{}, err
+					}
+					logger.Error(err, "Failed to update namespace status")
+				}
 			}
 
 			r.recorder.Event(environment, corev1.EventTypeNormal, "NamespaceCreated", "Created namespace for environment")
@@ -179,10 +196,17 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			if environment.Status.RoleBindingStatus != nil {
 				updateResourceStatusIfCreating(environment.Status.RoleBindingStatus, v1.ResourceStatusPhaseActive, "Role binding created successfully")
 
-				// Set the role binding name on the RoleBindingStatus resource if not already set
-				_ = r.roleBindingManager.GetName(environment)
+				// Set the role binding name on the RoleBindingStatus resource if not already set.
+				// The name was just newly computed for a created role binding, so persisting it
+				// is required to avoid orphaning it; fail closed if persistence fails.
+				newName := setResourceNameIfEmpty(&environment.Status.RoleBindingStatus, r.roleBindingManager.GetName(environment))
 
-				_ = r.environmentManager.UpdateStatus(ctx, environment)
+				if err := r.environmentManager.UpdateStatus(ctx, environment); err != nil {
+					if newName {
+						return ctrl.Result{}, err
+					}
+					logger.Error(err, "Failed to update role binding status")
+				}
 			}
 
 			r.recorder.Event(environment, corev1.EventTypeNormal, "RoleBindingCreated", "Created role binding for environment")
@@ -197,8 +221,8 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if err != nil {
 		r.recorder.Event(environment, corev1.EventTypeWarning, "NamespaceReconciliationFailed", "Failed to reconcile namespace")
 
-		// This should cause the namespace to be set in environment status
-		_ = r.namespaceManager.GetNamespaceName(environment)
+		// Persist the namespace name so deletion can rely on the stored value
+		setResourceNameIfEmpty(&environment.Status.NamespaceStatus, r.namespaceManager.GetNamespaceName(environment))
 
 		// Update namespace status to Failed, but only if not already Failed
 		if environment.Status.NamespaceStatus != nil {
@@ -209,7 +233,8 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 		// Update environment status to Failed if namespace cannot be reconciled
 		if strings.Contains(err.Error(), "not managed by this operator") ||
-			strings.Contains(err.Error(), "Cannot use existing namespace") {
+			strings.Contains(err.Error(), "Cannot use existing namespace") ||
+			strings.Contains(err.Error(), "owned by a different environment") {
 			_ = r.updateStatus(ctx, environment, v1.EnvironmentPhaseFailed,
 				fmt.Sprintf("Namespace conflict: %v", err))
 		} else {
@@ -222,8 +247,8 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	// Set or update Namespace resource name if needed
 	if environment.Status.NamespaceStatus != nil && environment.Status.NamespaceStatus.ResourceName == "" {
-		// This should cause the namespace to be set in environment status
-		_ = r.namespaceManager.GetNamespaceName(environment)
+		// Persist the resolved namespace name; fail closed if persistence fails
+		setResourceNameIfEmpty(&environment.Status.NamespaceStatus, r.namespaceManager.GetNamespaceName(environment))
 		if err := r.environmentManager.UpdateStatus(ctx, environment); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -256,8 +281,8 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	// Set or update RoleBinding resource name if needed
 	if environment.Status.RoleBindingStatus != nil && environment.Status.RoleBindingStatus.ResourceName == "" {
-		// This should cause the role binding name to be set in environment status
-		_ = r.roleBindingManager.GetName(environment)
+		// Persist the resolved role binding name; fail closed if persistence fails
+		setResourceNameIfEmpty(&environment.Status.RoleBindingStatus, r.roleBindingManager.GetName(environment))
 		if err := r.environmentManager.UpdateStatus(ctx, environment); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -328,6 +353,25 @@ func (r *EnvironmentReconciler) handleDeletion(ctx context.Context, env *v1.Envi
 					}
 
 					// For unmanaged namespaces, skip waiting and proceed to finalizer removal
+					skipWaiting = true
+				} else if strings.Contains(err.Error(), "environment-id mismatch") {
+					// The namespace carries our management label but belongs to a different
+					// Environment, so it is not ours to delete. Leave it intact and proceed to
+					// finalizer removal — waiting for it to disappear would wedge this
+					// Environment's deletion forever (the foreign namespace is never deleted).
+					logger.V(0).Info("Namespace owned by a different environment, continuing with Environment deletion", "namespace", namespaceName)
+
+					// Update status to reflect the ownership mismatch, but only if current phase isn't already Failed
+					if env.Status.NamespaceStatus != nil {
+						updateResourceStatusIfNotFailed(env.Status.NamespaceStatus, v1.ResourceStatusPhaseFailed,
+							fmt.Sprintf("Namespace %s is owned by a different environment", namespaceName))
+
+						if updateErr := r.environmentManager.UpdateStatus(ctx, env); updateErr != nil {
+							logger.Error(updateErr, "Failed to update namespace status")
+						}
+					}
+
+					// Foreign namespace: skip waiting and proceed to finalizer removal
 					skipWaiting = true
 				} else {
 					// For other errors, retry
@@ -459,6 +503,21 @@ func updateResourceStatusIfNotSpecial(status *v1.ResourceStatus, phase v1.Resour
 		status.Phase = phase
 		status.Message = message
 	}
+}
+
+// setResourceNameIfEmpty stores the resolved name on the resource status, creating the
+// status struct if needed, but only when no name has been persisted yet. It reports
+// whether a new name was assigned (so the caller can persist it). The getters are pure,
+// so the reconciler owns persistence of the name.
+func setResourceNameIfEmpty(statusPtr **v1.ResourceStatus, name string) bool {
+	if *statusPtr == nil {
+		*statusPtr = &v1.ResourceStatus{}
+	}
+	if (*statusPtr).ResourceName == "" {
+		(*statusPtr).ResourceName = name
+		return true
+	}
+	return false
 }
 
 // initResourceStatus initializes a resource status if it's nil or updates it if it has an empty phase

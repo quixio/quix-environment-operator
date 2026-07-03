@@ -20,8 +20,10 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	quixiov1 "github.com/quix-analytics/quix-environment-operator/api/v1"
+	"github.com/quix-analytics/quix-environment-operator/internal/resources/namespace"
 	"github.com/quix-analytics/quix-environment-operator/internal/security"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/client-go/tools/record"
 )
 
 var _ = Describe("Environment Operator Security Tests", func() {
@@ -229,7 +231,6 @@ var _ = Describe("Environment Operator Security Tests", func() {
 
 			conflictingAnnotations := map[string]string{
 				"quix.io/created-by":                "malicious-controller",
-				"quix.io/environment-crd-namespace": "wrong-namespace",
 				"quix.io/environment-resource-name": "wrong-name",
 			}
 
@@ -432,6 +433,282 @@ var _ = Describe("Environment Operator Security Tests", func() {
 			if err == nil {
 				k8sClient.Delete(ctx, excessiveRole)
 			}
+		})
+	})
+	Context("Namespace Ownership Enforcement", func() {
+		// makeOwnershipEnv builds an Environment CR sharing a Spec.Id (so it resolves to the
+		// same namespace) but with a distinct metadata.name (so its identity label differs).
+		makeOwnershipEnv := func(sharedID, resourceName string) *quixiov1.Environment {
+			return &quixiov1.Environment{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "quix.io/v1",
+					Kind:       "Environment",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: testNamespace,
+				},
+				Spec: quixiov1.EnvironmentSpec{
+					Id: sharedID,
+				},
+			}
+		}
+
+		It("Should reject a second Environment adopting another Environment's namespace (create path)", func() {
+			ctx := context.Background()
+			sharedID := "test-owner-shared"
+			nsName := fmt.Sprintf("%s%s", sharedID, Config.NamespaceSuffix)
+
+			// env-a claims the namespace first.
+			envA := makeOwnershipEnv(sharedID, "test-owner-a")
+			Expect(k8sClient.Create(ctx, envA)).Should(Succeed())
+
+			createdNs := &corev1.Namespace{}
+			Eventually(func() bool {
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: nsName}, createdNs); err != nil {
+					return false
+				}
+				return createdNs.Labels[namespace.LabelEnvironmentName] == envA.Name
+			}, timeout, interval).Should(BeTrue(), "Namespace was not created and owned by env-a")
+
+			// env-b shares the Spec.Id (same namespace) but is a different Environment.
+			envB := makeOwnershipEnv(sharedID, "test-owner-b")
+			Expect(k8sClient.Create(ctx, envB)).Should(Succeed())
+
+			// env-b must be rejected and the namespace must still belong to env-a.
+			Eventually(func() quixiov1.EnvironmentPhase {
+				fetched := &quixiov1.Environment{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: envB.Name, Namespace: testNamespace}, fetched); err != nil {
+					return ""
+				}
+				return fetched.Status.Phase
+			}, timeout, interval).Should(Equal(quixiov1.EnvironmentPhaseFailed),
+				"env-b should fail to adopt env-a's namespace")
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nsName}, createdNs)).Should(Succeed())
+			Expect(createdNs.Labels[namespace.LabelEnvironmentName]).To(Equal(envA.Name),
+				"Namespace identity must still belong to env-a after a rejected adoption")
+
+			Expect(k8sClient.Delete(ctx, envB)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, envA)).Should(Succeed())
+		})
+
+		It("Should allow the same Environment to re-reconcile its own namespace", func() {
+			ctx := context.Background()
+			env := createIntegrationTestEnvironment("test-owner-idem", nil, nil)
+			Expect(k8sClient.Create(ctx, env)).Should(Succeed())
+
+			envLookupKey := types.NamespacedName{Name: env.Name, Namespace: testNamespace}
+			Eventually(func() quixiov1.EnvironmentPhase {
+				fetched := &quixiov1.Environment{}
+				if err := k8sClient.Get(ctx, envLookupKey, fetched); err != nil {
+					return ""
+				}
+				return fetched.Status.Phase
+			}, timeout, interval).Should(Equal(quixiov1.EnvironmentPhaseReady))
+
+			// Touch the spec to trigger another reconcile; the same owner must keep succeeding.
+			fetched := &quixiov1.Environment{}
+			Expect(k8sClient.Get(ctx, envLookupKey, fetched)).Should(Succeed())
+			if fetched.Spec.Labels == nil {
+				fetched.Spec.Labels = map[string]string{}
+			}
+			fetched.Spec.Labels["quix.io/touch"] = "1"
+			Expect(k8sClient.Update(ctx, fetched)).Should(Succeed())
+
+			Eventually(func() string {
+				updated := &quixiov1.Environment{}
+				if err := k8sClient.Get(ctx, envLookupKey, updated); err != nil {
+					return ""
+				}
+				if updated.Status.Phase != quixiov1.EnvironmentPhaseReady {
+					return string(updated.Status.Phase)
+				}
+				return "ready-touched"
+			}, timeout, interval).Should(Equal("ready-touched"),
+				"Same-environment re-reconcile must stay Ready")
+
+			Expect(k8sClient.Delete(ctx, env)).Should(Succeed())
+		})
+
+		It("Should reject update() against a namespace owned by a different Environment", func() {
+			ctx := context.Background()
+			sharedID := "test-owner-update"
+			nsName := fmt.Sprintf("%s%s", sharedID, Config.NamespaceSuffix)
+
+			// Pre-create a namespace owned (by identity labels) by env-a.
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: nsName,
+					Labels: map[string]string{
+						namespace.ManagedByLabel:       namespace.OperatorName,
+						namespace.LabelEnvironmentID:   sharedID,
+						namespace.LabelEnvironmentName: "test-owner-update-a",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ns)).Should(Succeed())
+
+			// env-b reconciles via a manager: the namespace exists, so Reconcile takes the update() path.
+			mgr := namespace.NewManager(k8sClient, record.NewFakeRecorder(10), Config)
+			envB := makeOwnershipEnv(sharedID, "test-owner-update-b")
+
+			_, err := mgr.Reconcile(ctx, envB)
+			Expect(err).To(HaveOccurred(), "update() must reject a mismatched owner")
+			Expect(err.Error()).To(ContainSubstring("owned by a different environment"))
+
+			// Namespace identity must be untouched.
+			fetchedNs := &corev1.Namespace{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nsName}, fetchedNs)).Should(Succeed())
+			Expect(fetchedNs.Labels[namespace.LabelEnvironmentName]).To(Equal("test-owner-update-a"))
+
+			Expect(k8sClient.Delete(ctx, ns)).Should(Succeed())
+		})
+
+		It("Should adopt a managed namespace whose identity labels are empty", func() {
+			ctx := context.Background()
+			sharedID := "test-owner-legacy"
+			nsName := fmt.Sprintf("%s%s", sharedID, Config.NamespaceSuffix)
+
+			// Legacy namespace: managed-by set, but identity labels absent.
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: nsName,
+					Labels: map[string]string{
+						namespace.ManagedByLabel: namespace.OperatorName,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ns)).Should(Succeed())
+
+			mgr := namespace.NewManager(k8sClient, record.NewFakeRecorder(10), Config)
+			env := makeOwnershipEnv(sharedID, "test-owner-legacy-a")
+
+			_, err := mgr.Reconcile(ctx, env)
+			Expect(err).NotTo(HaveOccurred(), "Legacy managed namespace with empty identity should be adoptable")
+
+			fetchedNs := &corev1.Namespace{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nsName}, fetchedNs)).Should(Succeed())
+			Expect(fetchedNs.Labels[namespace.LabelEnvironmentName]).To(Equal(env.Name),
+				"Adopting Environment should stamp its identity onto the legacy namespace")
+
+			Expect(k8sClient.Delete(ctx, ns)).Should(Succeed())
+		})
+
+		It("Should refuse Delete() against a namespace owned by a different Environment", func() {
+			ctx := context.Background()
+			sharedID := "test-owner-delete-foreign"
+			nsName := fmt.Sprintf("%s%s", sharedID, Config.NamespaceSuffix)
+
+			// Namespace is managed-by us but its identity belongs to a DIFFERENT environment.
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: nsName,
+					Labels: map[string]string{
+						namespace.ManagedByLabel:       namespace.OperatorName,
+						namespace.LabelEnvironmentID:   sharedID,
+						namespace.LabelEnvironmentName: "test-owner-delete-a",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ns)).Should(Succeed())
+
+			// env-b shares the Spec.Id (same namespace name) but a different metadata.name,
+			// so its identity label (environment-name) does not match — foreign owner.
+			recorder := record.NewFakeRecorder(10)
+			mgr := namespace.NewManager(k8sClient, recorder, Config)
+			envB := makeOwnershipEnv(sharedID, "test-owner-delete-b")
+
+			// Delete() must refuse with an error (so the reconciler's handleDeletion routes to
+			// finalizer removal rather than waiting on a deletion that never happens), and the
+			// namespace must still exist (we must never delete a foreign namespace).
+			err := mgr.Delete(ctx, envB)
+			Expect(err).To(HaveOccurred(),
+				"Delete() must refuse a namespace owned by a different environment")
+			Expect(err.Error()).To(ContainSubstring("environment-id mismatch"))
+
+			// A warning event must be emitted naming the mismatch.
+			Eventually(recorder.Events).Should(Receive(ContainSubstring("NamespaceEnvironmentIDMismatch")),
+				"Delete() must emit a NamespaceEnvironmentIDMismatch warning event")
+
+			fetchedNs := &corev1.Namespace{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nsName}, fetchedNs)).Should(Succeed(),
+				"Foreign namespace must still exist after a refused Delete()")
+			Expect(fetchedNs.DeletionTimestamp).To(BeNil(),
+				"Foreign namespace must not be marked for deletion")
+			Expect(fetchedNs.Labels[namespace.LabelEnvironmentName]).To(Equal("test-owner-delete-a"))
+
+			Expect(k8sClient.Delete(ctx, ns)).Should(Succeed())
+		})
+
+		It("Should delete a namespace whose identity matches the Environment", func() {
+			ctx := context.Background()
+			sharedID := "test-owner-delete-match"
+			nsName := fmt.Sprintf("%s%s", sharedID, Config.NamespaceSuffix)
+
+			mgr := namespace.NewManager(k8sClient, record.NewFakeRecorder(10), Config)
+			env := makeOwnershipEnv(sharedID, "test-owner-delete-match-a")
+
+			// Namespace with matching managed-by + identity labels for this Environment.
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: nsName,
+					Labels: map[string]string{
+						namespace.ManagedByLabel:       namespace.OperatorName,
+						namespace.LabelEnvironmentID:   sharedID,
+						namespace.LabelEnvironmentName: env.Name,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ns)).Should(Succeed())
+
+			Expect(mgr.Delete(ctx, env)).Should(Succeed(),
+				"Delete() must succeed for a namespace owned by this environment")
+
+			// envtest has no namespace GC controller, so deletion sets DeletionTimestamp
+			// (and the kubernetes finalizer keeps it terminating) rather than removing it.
+			Eventually(func() bool {
+				fetchedNs := &corev1.Namespace{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: nsName}, fetchedNs); err != nil {
+					return errors.IsNotFound(err)
+				}
+				return fetchedNs.DeletionTimestamp != nil
+			}, timeout, interval).Should(BeTrue(),
+				"Matching namespace must be deleted (gone or terminating)")
+		})
+
+		It("Should delete a managed namespace whose identity labels are absent (both-empty = adoptable = owned)", func() {
+			ctx := context.Background()
+			sharedID := "test-owner-delete-legacy"
+			nsName := fmt.Sprintf("%s%s", sharedID, Config.NamespaceSuffix)
+
+			// Legacy namespace: managed-by set, identity labels absent. Per isOwnedBy
+			// semantics, both-identity-labels-empty is treated as owned/adoptable, so
+			// Delete() must proceed (we assert it is deleted/terminating, not skipped).
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: nsName,
+					Labels: map[string]string{
+						namespace.ManagedByLabel: namespace.OperatorName,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ns)).Should(Succeed())
+
+			mgr := namespace.NewManager(k8sClient, record.NewFakeRecorder(10), Config)
+			env := makeOwnershipEnv(sharedID, "test-owner-delete-legacy-a")
+
+			Expect(mgr.Delete(ctx, env)).Should(Succeed(),
+				"Delete() must proceed for a managed namespace with empty identity labels")
+
+			Eventually(func() bool {
+				fetchedNs := &corev1.Namespace{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: nsName}, fetchedNs); err != nil {
+					return errors.IsNotFound(err)
+				}
+				return fetchedNs.DeletionTimestamp != nil
+			}, timeout, interval).Should(BeTrue(),
+				"Empty-identity managed namespace must be deleted (gone or terminating)")
 		})
 	})
 })

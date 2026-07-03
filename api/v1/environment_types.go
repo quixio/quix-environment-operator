@@ -19,7 +19,7 @@ type EnvironmentSpec struct {
 	// All annotation keys must have the 'quix.io/' prefix
 	// +optional
 	// +kubebuilder:validation:XValidation:rule="self.all(k, k.startsWith('quix.io/'))",message="All annotation keys must have the 'quix.io/' prefix"
-	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k == 'quix.io/created-by' || k == 'quix.io/environment-crd-namespace' || k == 'quix.io/environment-resource-name')",message="Cannot override protected annotations: quix.io/created-by, quix.io/environment-crd-namespace, quix.io/environment-resource-name"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k == 'quix.io/created-by' || k == 'quix.io/environment-resource-name')",message="Cannot override protected annotations: quix.io/created-by, quix.io/environment-resource-name"
 	Annotations map[string]string `json:"annotations,omitempty"`
 
 	// Labels to apply to the created namespace

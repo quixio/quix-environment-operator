@@ -36,7 +36,9 @@ func NewManager(client client.Client, config config.ConfigProvider, logger logr.
 	}
 }
 
-// GetName returns the name of the role binding for the environment
+// GetName returns the name of the role binding for the environment.
+// It is a pure getter: it returns the persisted ResourceName when set, otherwise
+// the computed convention name. It never mutates env.Status.
 func (m *DefaultManager) GetName(env *v1.Environment) string {
 	// Use stored role binding name if available
 	if env.Status.RoleBindingStatus != nil && env.Status.RoleBindingStatus.ResourceName != "" {
@@ -44,11 +46,7 @@ func (m *DefaultManager) GetName(env *v1.Environment) string {
 	}
 
 	// Otherwise use the default naming convention
-	if env.Status.RoleBindingStatus == nil {
-		env.Status.RoleBindingStatus = &v1.ResourceStatus{}
-	}
-	env.Status.RoleBindingStatus.ResourceName = fmt.Sprintf("%s-quix-crb", env.Spec.Id)
-	return env.Status.RoleBindingStatus.ResourceName
+	return fmt.Sprintf("%s-quix-crb", env.Spec.Id)
 }
 
 // Exists checks if a role binding exists
