@@ -2,8 +2,10 @@ package environment
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -12,6 +14,7 @@ import (
 	"github.com/quix-analytics/quix-environment-operator/internal/resources/environment"
 	"github.com/quix-analytics/quix-environment-operator/internal/resources/namespace"
 	"github.com/quix-analytics/quix-environment-operator/internal/resources/rolebinding"
+	"github.com/quix-analytics/quix-environment-operator/internal/security"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -21,6 +24,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -37,6 +41,10 @@ const (
 	CreatedByAnnotation  = "quix.io/created-by"
 
 	RequeueDelay = time.Second * 1
+
+	// StartupReconcileTimeout bounds the one-shot startup reconciliation sweep so a slow or
+	// unreachable API server cannot keep it running indefinitely.
+	StartupReconcileTimeout = time.Minute * 5
 )
 
 // EnvironmentReconciler reconciles Environment resources
@@ -144,11 +152,15 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				if environment.Status.NamespaceStatus != nil {
 					updateResourceStatusIfNotFailed(environment.Status.NamespaceStatus, v1.ResourceStatusPhaseFailed,
 						fmt.Sprintf("Failed to create namespace: %v", err))
-					_ = r.environmentManager.UpdateStatus(ctx, environment)
+					if statusErr := r.environmentManager.UpdateStatus(ctx, environment); statusErr != nil {
+						logger.Error(statusErr, "failed to persist namespace Failed status after namespace creation error")
+					}
 				}
 
 				// Update environment status to Failed
-				_ = r.updateStatus(ctx, environment, v1.EnvironmentPhaseFailed, fmt.Sprintf("Failed to create namespace: %v", err))
+				if statusErr := r.updateStatus(ctx, environment, v1.EnvironmentPhaseFailed, fmt.Sprintf("Failed to create namespace: %v", err)); statusErr != nil {
+					logger.Error(statusErr, "failed to set environment Failed status after namespace creation error")
+				}
 				return ctrl.Result{}, err
 			}
 
@@ -174,7 +186,9 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			// Update RoleBinding status to Creating if not already set
 			if environment.Status.RoleBindingStatus == nil || environment.Status.RoleBindingStatus.Phase == "" {
 				initResourceStatus(&environment.Status.RoleBindingStatus, v1.ResourceStatusPhaseCreating, "Creating role binding")
-				_ = r.environmentManager.UpdateStatus(ctx, environment)
+				if statusErr := r.environmentManager.UpdateStatus(ctx, environment); statusErr != nil {
+					logger.Error(statusErr, "failed to persist role binding Creating status")
+				}
 			}
 
 			// Create RoleBinding for the environment
@@ -185,10 +199,14 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				if environment.Status.RoleBindingStatus != nil {
 					updateResourceStatusIfNotFailed(environment.Status.RoleBindingStatus, v1.ResourceStatusPhaseFailed,
 						fmt.Sprintf("Failed to create role binding: %v", err))
-					_ = r.environmentManager.UpdateStatus(ctx, environment)
+					if statusErr := r.environmentManager.UpdateStatus(ctx, environment); statusErr != nil {
+						logger.Error(statusErr, "failed to persist role binding Failed status after role binding creation error")
+					}
 				}
 
-				_ = r.updateStatus(ctx, environment, v1.EnvironmentPhaseFailed, fmt.Sprintf("Failed to create role binding: %v", err))
+				if statusErr := r.updateStatus(ctx, environment, v1.EnvironmentPhaseFailed, fmt.Sprintf("Failed to create role binding: %v", err)); statusErr != nil {
+					logger.Error(statusErr, "failed to set environment Failed status after role binding creation error")
+				}
 				return ctrl.Result{}, fmt.Errorf("error creating role binding: %w", err)
 			}
 
@@ -228,18 +246,23 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		if environment.Status.NamespaceStatus != nil {
 			updateResourceStatusIfNotFailed(environment.Status.NamespaceStatus, v1.ResourceStatusPhaseFailed,
 				fmt.Sprintf("Failed to reconcile namespace: %v", err))
-			_ = r.environmentManager.UpdateStatus(ctx, environment)
+			if statusErr := r.environmentManager.UpdateStatus(ctx, environment); statusErr != nil {
+				logger.Error(statusErr, "failed to persist namespace Failed status after namespace reconcile error")
+			}
 		}
 
 		// Update environment status to Failed if namespace cannot be reconciled
-		if strings.Contains(err.Error(), "not managed by this operator") ||
-			strings.Contains(err.Error(), "Cannot use existing namespace") ||
-			strings.Contains(err.Error(), "owned by a different environment") {
-			_ = r.updateStatus(ctx, environment, v1.EnvironmentPhaseFailed,
-				fmt.Sprintf("Namespace conflict: %v", err))
+		if stderrors.Is(err, namespace.ErrNamespaceNotManaged) ||
+			stderrors.Is(err, namespace.ErrNamespaceOwnershipConflict) {
+			if statusErr := r.updateStatus(ctx, environment, v1.EnvironmentPhaseFailed,
+				fmt.Sprintf("Namespace conflict: %v", err)); statusErr != nil {
+				logger.Error(statusErr, "failed to set environment Failed status for namespace conflict")
+			}
 		} else {
-			_ = r.updateStatus(ctx, environment, v1.EnvironmentPhaseFailed,
-				fmt.Sprintf("Failed to reconcile namespace: %v", err))
+			if statusErr := r.updateStatus(ctx, environment, v1.EnvironmentPhaseFailed,
+				fmt.Sprintf("Failed to reconcile namespace: %v", err)); statusErr != nil {
+				logger.Error(statusErr, "failed to set environment Failed status after namespace reconcile error")
+			}
 		}
 
 		return ctrl.Result{}, fmt.Errorf("error reconciling namespace: %w", err)
@@ -263,17 +286,23 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		if environment.Status.RoleBindingStatus != nil {
 			updateResourceStatusIfNotFailed(environment.Status.RoleBindingStatus, v1.ResourceStatusPhaseFailed,
 				fmt.Sprintf("Failed to reconcile role binding: %v", err))
-			_ = r.environmentManager.UpdateStatus(ctx, environment)
+			if statusErr := r.environmentManager.UpdateStatus(ctx, environment); statusErr != nil {
+				logger.Error(statusErr, "failed to persist role binding Failed status after role binding reconcile error")
+			}
 		}
 
 		// If this is a security validation error, mark the environment as Failed
-		if strings.Contains(err.Error(), "security violation") {
-			_ = r.updateStatus(ctx, environment, v1.EnvironmentPhaseFailed,
-				fmt.Sprintf("Security validation failed: %v", err))
+		if stderrors.Is(err, security.ErrSecurityViolation) {
+			if statusErr := r.updateStatus(ctx, environment, v1.EnvironmentPhaseFailed,
+				fmt.Sprintf("Security validation failed: %v", err)); statusErr != nil {
+				logger.Error(statusErr, "failed to set environment Failed status for security violation")
+			}
 			return ctrl.Result{}, err
 		} else {
-			_ = r.updateStatus(ctx, environment, v1.EnvironmentPhaseFailed,
-				fmt.Sprintf("Failed to reconcile role binding: %v", err))
+			if statusErr := r.updateStatus(ctx, environment, v1.EnvironmentPhaseFailed,
+				fmt.Sprintf("Failed to reconcile role binding: %v", err)); statusErr != nil {
+				logger.Error(statusErr, "failed to set environment Failed status after role binding reconcile error")
+			}
 		}
 
 		return ctrl.Result{}, fmt.Errorf("error reconciling role binding: %w", err)
@@ -296,7 +325,27 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		r.recorder.Event(environment, corev1.EventTypeNormal, "EnvironmentReady", "Environment is ready")
 	}
 
+	// Advance ObservedGeneration on the steady-state path too. updateStatus only syncs it when
+	// the phase/message changes, so an already-Ready Environment whose spec generation changed
+	// would otherwise never have ObservedGeneration catch up.
+	if err := r.syncObservedGeneration(ctx, environment); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	return ctrl.Result{RequeueAfter: RequeueDelay}, nil
+}
+
+// syncObservedGeneration advances status.observedGeneration to the current metadata.generation
+// when it lags. It modifies only observedGeneration (other status fields are persisted with
+// their current in-memory values, unchanged) and is a no-op (no API write) when the two are
+// already equal — so when updateStatus already synced observedGeneration in this reconcile, or on
+// steady-state RequeueAfter cycles, no extra status write is issued.
+func (r *EnvironmentReconciler) syncObservedGeneration(ctx context.Context, env *v1.Environment) error {
+	if env.Status.ObservedGeneration == env.Generation {
+		return nil
+	}
+	env.Status.ObservedGeneration = env.Generation
+	return r.environmentManager.UpdateStatus(ctx, env)
 }
 
 // handleDeletion processes the deletion of an environment
@@ -337,7 +386,7 @@ func (r *EnvironmentReconciler) handleDeletion(ctx context.Context, env *v1.Envi
 			err := r.namespaceManager.Delete(ctx, env)
 			if err != nil {
 				// If error is due to namespace not being managed, log but continue with Environment deletion
-				if strings.Contains(err.Error(), "not managed by this operator") {
+				if stderrors.Is(err, namespace.ErrNamespaceNotManaged) {
 					logger.V(0).Info("Namespace not managed by this operator, continuing with Environment deletion", "namespace", namespaceName)
 					r.recorder.Event(env, corev1.EventTypeWarning, "NamespaceNotManaged",
 						fmt.Sprintf("Namespace %s is not managed by this operator and was not deleted", namespaceName))
@@ -354,7 +403,7 @@ func (r *EnvironmentReconciler) handleDeletion(ctx context.Context, env *v1.Envi
 
 					// For unmanaged namespaces, skip waiting and proceed to finalizer removal
 					skipWaiting = true
-				} else if strings.Contains(err.Error(), "environment-id mismatch") {
+				} else if stderrors.Is(err, namespace.ErrNamespaceEnvironmentIDMismatch) {
 					// The namespace carries our management label but belongs to a different
 					// Environment, so it is not ours to delete. Leave it intact and proceed to
 					// finalizer removal — waiting for it to disappear would wedge this
@@ -545,16 +594,26 @@ func (r *EnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return err
 	}
 
-	// Trigger reconciliation for all environments after cache has started
-	go func() {
-		<-startedCh
-		r.ReconcileAllEnvironments(context.Background())
-	}()
+	// Trigger reconciliation for all environments after the cache has started, as a
+	// manager-tracked runnable so the sweep uses the manager lifecycle context (cancelled on
+	// shutdown) and is bounded by an explicit timeout instead of running under context.Background().
+	if err := mgr.Add(
+		manager.RunnableFunc(func(ctx context.Context) error {
+			<-startedCh
+			sweepCtx, cancel := context.WithTimeout(ctx, StartupReconcileTimeout)
+			defer cancel()
+			r.ReconcileAllEnvironments(sweepCtx)
+			return nil
+		}),
+	); err != nil {
+		return err
+	}
 
 	return ctrl.NewControllerManagedBy(mgr).
 		// Use a predicate that ignores namespace fields for cluster-scoped resources
 		For(&v1.Environment{}, builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		Owns(&corev1.Namespace{}).
+		WithOptions(controller.Options{MaxConcurrentReconciles: max(1, r.operatorConfig.MaxConcurrentReconciles)}).
 		Complete(r)
 }
 
@@ -577,14 +636,38 @@ func (r *EnvironmentReconciler) ReconcileAllEnvironments(ctx context.Context) {
 
 	logger.Info("Queueing environments for reconciliation", "count", count)
 
+	reqs := make([]ctrl.Request, 0, count)
 	for _, env := range environmentList.Items {
-		req := ctrl.Request{
-			NamespacedName: types.NamespacedName{
-				Name: env.Name,
-			},
-		}
-		go r.Reconcile(ctx, req)
+		reqs = append(reqs, ctrl.Request{NamespacedName: types.NamespacedName{Name: env.Name}})
 	}
 
+	// Bound the startup fan-out so a large environment count cannot exhaust memory or the API
+	// connection pool. Reuse the steady-state MaxConcurrentReconciles as the single bound.
+	runBounded(reqs, max(1, r.operatorConfig.MaxConcurrentReconciles), func(req ctrl.Request) {
+		if _, err := r.Reconcile(ctx, req); err != nil {
+			logger.Error(err, "Failed to reconcile environment during startup sweep", "environment", req.Name)
+		}
+	})
+
 	logger.Info("All environments queued for reconciliation")
+}
+
+// runBounded runs fn for each request with at most bound concurrent invocations, and returns
+// only after every invocation has completed (so no goroutines leak past the caller).
+func runBounded(reqs []ctrl.Request, bound int, fn func(ctrl.Request)) {
+	if bound < 1 {
+		bound = 1
+	}
+	sem := make(chan struct{}, bound)
+	var wg sync.WaitGroup
+	for _, req := range reqs {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(req ctrl.Request) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			fn(req)
+		}(req)
+	}
+	wg.Wait()
 }

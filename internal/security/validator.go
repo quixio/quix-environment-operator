@@ -2,12 +2,17 @@ package security
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+// ErrSecurityViolation is wrapped (via %w) into every validator rejection so callers can classify
+// the failure with errors.Is instead of substring matching on the message text.
+var ErrSecurityViolation = errors.New("security violation")
 
 // Validator provides security validation functions
 type Validator struct {
@@ -45,7 +50,7 @@ func (v *Validator) validateRules(rules []rbacv1.PolicyRule, name, kind string) 
 		if containsAny(rule.APIGroups, []string{"rbac.authorization.k8s.io", "*"}) {
 			if containsAny(rule.Resources, []string{"rolebindings", "clusterrolebindings", "*"}) {
 				if containsAny(rule.Verbs, []string{"create", "update", "patch", "delete", "*"}) {
-					return fmt.Errorf("security violation: %s '%s' has dangerous role binding permissions that could allow privilege escalation", kind, name)
+					return fmt.Errorf("%w: %s '%s' has dangerous role binding permissions that could allow privilege escalation", ErrSecurityViolation, kind, name)
 				}
 			}
 		}
@@ -54,7 +59,7 @@ func (v *Validator) validateRules(rules []rbacv1.PolicyRule, name, kind string) 
 		if containsAny(rule.APIGroups, []string{"*"}) &&
 			containsAny(rule.Resources, []string{"*"}) &&
 			containsAny(rule.Verbs, []string{"*"}) {
-			return fmt.Errorf("security violation: %s '%s' has excessive wildcard permissions that violate security posture", kind, name)
+			return fmt.Errorf("%w: %s '%s' has excessive wildcard permissions that violate security posture", ErrSecurityViolation, kind, name)
 		}
 	}
 

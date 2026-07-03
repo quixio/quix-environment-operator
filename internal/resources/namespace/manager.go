@@ -97,7 +97,7 @@ func (m *DefaultManager) create(ctx context.Context, env *v1.Environment) (*core
 			// Check if the namespace is managed by us before making changes.
 			// Operate on the already-fetched object to avoid an extra Get / TOCTOU gap.
 			if existingNs.Labels == nil || existingNs.Labels[ManagedByLabel] != OperatorName {
-				return nil, fmt.Errorf("cannot use existing namespace %s: not managed by this operator", namespaceName)
+				return nil, fmt.Errorf("cannot use existing namespace %s: %w", namespaceName, ErrNamespaceNotManaged)
 			}
 
 			// Reject adoption when the namespace already belongs to a different Environment.
@@ -105,8 +105,8 @@ func (m *DefaultManager) create(ctx context.Context, env *v1.Environment) (*core
 				m.recorder.Eventf(env, corev1.EventTypeWarning, "NamespaceOwnershipConflict",
 					"Namespace %s is owned by a different environment (id=%q name=%q) and will not be adopted",
 					namespaceName, existingNs.Labels[LabelEnvironmentID], existingNs.Labels[LabelEnvironmentName])
-				return nil, fmt.Errorf("cannot adopt namespace %s: owned by a different environment (id=%q name=%q)",
-					namespaceName, existingNs.Labels[LabelEnvironmentID], existingNs.Labels[LabelEnvironmentName])
+				return nil, fmt.Errorf("cannot adopt namespace %s: %w (id=%q name=%q)",
+					namespaceName, ErrNamespaceOwnershipConflict, existingNs.Labels[LabelEnvironmentID], existingNs.Labels[LabelEnvironmentName])
 			}
 
 			if m.ApplyMetadata(env, existingNs) {
@@ -139,7 +139,7 @@ func (m *DefaultManager) update(ctx context.Context, env *v1.Environment) error 
 	// Check if the namespace is managed by us before making changes.
 	// Operate on the already-fetched object to avoid an extra Get / TOCTOU gap.
 	if namespace.Labels == nil || namespace.Labels[ManagedByLabel] != OperatorName {
-		return fmt.Errorf("cannot update namespace %s: not managed by this operator", namespaceName)
+		return fmt.Errorf("cannot update namespace %s: %w", namespaceName, ErrNamespaceNotManaged)
 	}
 
 	// Reject when the namespace already belongs to a different Environment.
@@ -147,8 +147,8 @@ func (m *DefaultManager) update(ctx context.Context, env *v1.Environment) error 
 		m.recorder.Eventf(env, corev1.EventTypeWarning, "NamespaceOwnershipConflict",
 			"Namespace %s is owned by a different environment (id=%q name=%q) and will not be updated",
 			namespaceName, namespace.Labels[LabelEnvironmentID], namespace.Labels[LabelEnvironmentName])
-		return fmt.Errorf("cannot adopt namespace %s: owned by a different environment (id=%q name=%q)",
-			namespaceName, namespace.Labels[LabelEnvironmentID], namespace.Labels[LabelEnvironmentName])
+		return fmt.Errorf("cannot adopt namespace %s: %w (id=%q name=%q)",
+			namespaceName, ErrNamespaceOwnershipConflict, namespace.Labels[LabelEnvironmentID], namespace.Labels[LabelEnvironmentName])
 	}
 
 	if m.ApplyMetadata(env, namespace) {
@@ -184,7 +184,7 @@ func (m *DefaultManager) Delete(ctx context.Context, env *v1.Environment) error 
 		logger.V(0).Info("Namespace is not managed by this operator, skipping deletion")
 		m.recorder.Eventf(env, corev1.EventTypeWarning, "NamespaceNotManaged",
 			"Namespace %s is not managed by this operator and will not be deleted", namespaceName)
-		return fmt.Errorf("namespace %s is not managed by this operator and will not be deleted", namespaceName)
+		return fmt.Errorf("namespace %s is %w and will not be deleted", namespaceName, ErrNamespaceNotManaged)
 	}
 
 	// Verify environment-id ownership before deleting (defense-in-depth against a
@@ -200,7 +200,7 @@ func (m *DefaultManager) Delete(ctx context.Context, env *v1.Environment) error 
 		m.recorder.Eventf(env, corev1.EventTypeWarning, "NamespaceEnvironmentIDMismatch",
 			"Namespace %s is owned by a different environment (id=%q name=%q) and will not be deleted",
 			namespaceName, namespace.Labels[LabelEnvironmentID], namespace.Labels[LabelEnvironmentName])
-		return fmt.Errorf("namespace %s environment-id mismatch, refusing deletion", namespaceName)
+		return fmt.Errorf("namespace %s %w, refusing deletion", namespaceName, ErrNamespaceEnvironmentIDMismatch)
 	}
 
 	// Proceed with deletion

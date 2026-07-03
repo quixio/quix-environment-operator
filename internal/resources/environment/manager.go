@@ -7,6 +7,7 @@ import (
 	"github.com/go-logr/logr"
 	v1 "github.com/quix-analytics/quix-environment-operator/api/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -66,10 +67,32 @@ func (m *DefaultManager) update(ctx context.Context, env *v1.Environment) error 
 	return m.client.Update(ctx, env)
 }
 
-// UpdateStatus updates the status of an environment
+// UpdateStatus updates the status of an environment. On a conflict it re-fetches the latest
+// object, re-applies the caller's intended status, and retries, so a concurrent modification
+// does not fail the write outright. The caller's env is kept current (ResourceVersion and
+// Status) so subsequent writes in the same reconcile continue to work.
 func (m *DefaultManager) UpdateStatus(ctx context.Context, env *v1.Environment) error {
 	m.logger.V(0).Info("Updating environment status", "name", env.Name, "phase", env.Status.Phase)
-	return m.client.Status().Update(ctx, env)
+	desiredStatus := env.Status.DeepCopy()
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &v1.Environment{}
+		if err := m.client.Get(ctx, types.NamespacedName{Name: env.Name}, latest); err != nil {
+			return err
+		}
+		desiredStatus.DeepCopyInto(&latest.Status)
+		if err := m.client.Status().Update(ctx, latest); err != nil {
+			return err
+		}
+		// Advance only the caller's ResourceVersion so a subsequent write in the same
+		// reconcile is current. The caller's Status already holds the intended values
+		// (desiredStatus was copied from it), so leaving its Status pointers untouched keeps
+		// their identity stable for any code still referencing them.
+		env.ResourceVersion = latest.ResourceVersion
+		return nil
+	}); err != nil {
+		return fmt.Errorf("failed to update status for Environment %q: %w", env.Name, err)
+	}
+	return nil
 }
 
 // AddFinalizer adds a finalizer to an environment
