@@ -24,9 +24,11 @@ rules:
 # Enables the controller to manage role bindings for environment access control
 - apiGroups: ["rbac.authorization.k8s.io"]
   resources: ["rolebindings"]
-  verbs: ["get", "list", "create", "delete", "watch"]
-# Allows access to ClusterRoles for informer caching
-# Note: This ClusterRole must be bound to the service account at namespace level using RoleBinding
+  verbs: ["get", "list", "create", "update", "delete", "watch"]
+# Allows the controller to read ClusterRoles (e.g. to validate the configured platform role).
+# Note: this operator ClusterRole is bound cluster-wide to the controller's ServiceAccount via
+# operator-cluster-role-binding.yaml. That is distinct from the platform ClusterRole, which the
+# controller binds per-namespace via the RoleBindings it creates for each environment.
 - apiGroups: ["rbac.authorization.k8s.io"]
   resources: ["clusterroles"]
   verbs: ["get", "list", "watch"]
@@ -34,36 +36,16 @@ rules:
 - apiGroups: [""]
   resources: ["events"]
   verbs: ["create", "patch"]
-
-# The following rules are required for the operator only to be able to grant them to the service account at namespace level
-# see /deploy/quix-environment-operator/templates/platform-cluster-role.yaml
-# Allow users to access standard Kubernetes resources within their namespace
-- apiGroups: [""]
-  resources: ["pods", "services", "configmaps", "secrets", "serviceaccounts", "persistentvolumeclaims"]
+# Enables leader election (--leader-elect) via coordination Leases so only one replica reconciles
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-# Allow users to access deployment-related resources
-- apiGroups: ["apps"]
-  resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
-  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-- apiGroups: ["apps"]
-  resources: ["statefulsets/scale"]
-  verbs: ["get", "patch", "update"]
-# Allow users to access batch resources
-- apiGroups: ["batch"]
-  resources: ["jobs", "cronjobs"]
-  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-# Allow users to access networking resources
-- apiGroups: ["networking.k8s.io"]
-  resources: ["ingresses", "networkpolicies"]
-  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-# Allow users to execute pods for debugging
-- apiGroups: [""]
-  resources: ["pods/exec", "pods/log"]
-  verbs: ["get", "list", "create"]
-- apiGroups: [""]
-  resources: ["pods/status"]
-  verbs: ["get"]
-# Allow management of Prometheus monitoring resources for PVC metrics sidecars
-- apiGroups: ["monitoring.coreos.com"]
-  resources: ["podmonitors", "servicemonitors"]
-  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# Grants the operator permission to bind the platform ClusterRole to namespace service accounts.
+# Kubernetes privilege-escalation prevention requires the binder to either hold every permission
+# the bound role grants or have the bind verb on it. We take the least-privilege path: bind only,
+# scoped to the configured platform role, so the operator can create the RoleBinding without
+# itself holding the workload permissions. The workload rules live in platform-cluster-role.yaml.
+- apiGroups: ["rbac.authorization.k8s.io"]
+  resources: ["clusterroles"]
+  resourceNames: ["{{ .Values.env.clusterRoleName }}"]
+  verbs: ["bind"]

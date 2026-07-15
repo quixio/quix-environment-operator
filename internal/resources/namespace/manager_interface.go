@@ -23,9 +23,6 @@ type Manager interface {
 	// IsDeleting checks if a namespace for an environment is deleting
 	IsDeleting(ctx context.Context, env *v1.Environment) (bool, error)
 
-	// IsManaged checks if a namespace is managed by this operator
-	IsManaged(env *v1.Environment) bool
-
 	// Reconcile creates or updates a namespace for an environment
 	Reconcile(ctx context.Context, env *v1.Environment) (*corev1.Namespace, error)
 }

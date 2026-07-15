@@ -1,7 +1,9 @@
 package config
 
 import (
+	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -17,23 +19,34 @@ func NewEnvConfigLoader() *EnvConfigLoader {
 
 // LoadConfig loads the operator configuration from environment variables
 func (l *EnvConfigLoader) LoadConfig() (*OperatorConfig, error) {
-	reconcileInterval, _ := strconv.ParseInt(getEnvOrDefault("RECONCILE_INTERVAL_SECONDS", "60"), 10, 64)
-	maxConcurrentReconciles, _ := strconv.Atoi(getEnvOrDefault("MAX_CONCURRENT_RECONCILES", "5"))
+	maxConcurrentReconciles, err := strconv.Atoi(getEnvOrDefault("MAX_CONCURRENT_RECONCILES", "5"))
+	if err != nil {
+		maxConcurrentReconciles = 5 // Default to 5 if invalid
+	}
+
+	// Validate the environment regex at startup so a malformed pattern fails fast with a clear
+	// error instead of only surfacing on the first reconcile. An empty regex means "all IDs
+	// valid" and is intentionally left unvalidated.
+	environmentRegex := getEnvOrDefault("ENVIRONMENT_REGEX", "")
+	if environmentRegex != "" {
+		if _, err := regexp.Compile(environmentRegex); err != nil {
+			return nil, fmt.Errorf("invalid ENVIRONMENT_REGEX %q: %w", environmentRegex, err)
+		}
+	}
 
 	// Get cache sync period from env or use default (10 minutes)
 	cacheSyncPeriodStr := getEnvOrDefault("CACHE_SYNC_PERIOD", "10m")
 	cacheSyncPeriod, err := time.ParseDuration(cacheSyncPeriodStr)
 	if err != nil {
-		cacheSyncPeriod = 10 * time.Minute // Default to 10 minutes if invalid
+		return nil, fmt.Errorf("invalid CACHE_SYNC_PERIOD %q: %w", cacheSyncPeriodStr, err)
 	}
 
 	return &OperatorConfig{
-		NamespaceSuffix:         getEnvOrDefault("NAMESPACE_SUFFIX", "-qenv"),
-		EnvironmentRegex:        getEnvOrDefault("ENVIRONMENT_REGEX", ""),
+		NamespaceSuffix:         getEnvOrDefault("NAMESPACE_SUFFIX", "-qdep"),
+		EnvironmentRegex:        environmentRegex,
 		ServiceAccountName:      getEnvOrDefault("SERVICE_ACCOUNT_NAME", "quix-platform-account"),
 		ServiceAccountNamespace: getEnvOrDefault("SERVICE_ACCOUNT_NAMESPACE", "quix-environment"),
 		ClusterRoleName:         getEnvOrDefault("CLUSTER_ROLE_NAME", "quix-platform-account-role"),
-		ReconcileInterval:       time.Duration(reconcileInterval) * time.Second,
 		MaxConcurrentReconciles: maxConcurrentReconciles,
 		CacheSyncPeriod:         cacheSyncPeriod,
 	}, nil
@@ -41,9 +54,9 @@ func (l *EnvConfigLoader) LoadConfig() (*OperatorConfig, error) {
 
 // getEnvOrDefault returns the value of the environment variable or the default value
 func getEnvOrDefault(key, defaultValue string) string {
-	value := os.Getenv(key)
+	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
 		return defaultValue
 	}
-	return strings.TrimSpace(value)
+	return value
 }
