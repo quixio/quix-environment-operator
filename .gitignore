@@ -25,6 +25,8 @@
 *.DS_Store
 .idea/
 .vscode/
+.claude/
+.codex/
 
 # Helm
 helm/*.tgz

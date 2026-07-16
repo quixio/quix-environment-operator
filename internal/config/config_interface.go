@@ -27,9 +27,6 @@ type ConfigProvider interface {
 	// GetClusterRoleName returns the name of the ClusterRole to bind to the ServiceAccount
 	GetClusterRoleName() string
 
-	// GetReconcileInterval returns the reconcile interval duration
-	GetReconcileInterval() int64
-
 	// GetCacheSyncPeriod returns the cache sync period duration
 	GetCacheSyncPeriod() time.Duration
 }

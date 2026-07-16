@@ -19,7 +19,6 @@ spec:
   # All annotation keys must have the 'quix.io/' prefix
   # Protected annotations that cannot be overridden:
   # - quix.io/created-by
-  # - quix.io/environment-crd-namespace
   # - quix.io/environment-resource-name
   annotations:
     quix.io/description: "Comprehensive example environment with all fields"

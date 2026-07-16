@@ -2,6 +2,7 @@ package rolebinding
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 
 	"github.com/go-logr/logr"
@@ -15,6 +16,10 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+const ManagedByValue = "environment-operator"
+
+var ErrRoleBindingRecreatePending = stderrors.New("role binding recreate pending")
 
 // DefaultManager implements the Manager interface
 type DefaultManager struct {
@@ -36,7 +41,9 @@ func NewManager(client client.Client, config config.ConfigProvider, logger logr.
 	}
 }
 
-// GetName returns the name of the role binding for the environment
+// GetName returns the name of the role binding for the environment.
+// It is a pure getter: it returns the persisted ResourceName when set, otherwise
+// the computed convention name. It never mutates env.Status.
 func (m *DefaultManager) GetName(env *v1.Environment) string {
 	// Use stored role binding name if available
 	if env.Status.RoleBindingStatus != nil && env.Status.RoleBindingStatus.ResourceName != "" {
@@ -44,11 +51,7 @@ func (m *DefaultManager) GetName(env *v1.Environment) string {
 	}
 
 	// Otherwise use the default naming convention
-	if env.Status.RoleBindingStatus == nil {
-		env.Status.RoleBindingStatus = &v1.ResourceStatus{}
-	}
-	env.Status.RoleBindingStatus.ResourceName = fmt.Sprintf("%s-quix-crb", env.Spec.Id)
-	return env.Status.RoleBindingStatus.ResourceName
+	return fmt.Sprintf("%s-quix-crb", env.Spec.Id)
 }
 
 // Exists checks if a role binding exists
@@ -126,24 +129,10 @@ func (m *DefaultManager) Reconcile(ctx context.Context, env *v1.Environment) (*r
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      rbName,
 				Namespace: namespace,
-				Labels: map[string]string{
-					"quix.io/environment-id":   env.Spec.Id,
-					"quix.io/managed-by":       "environment-operator",
-					"quix.io/environment-name": env.Name,
-				},
+				Labels:    m.expectedLabels(env),
 			},
-			RoleRef: rbacv1.RoleRef{
-				APIGroup: "rbac.authorization.k8s.io",
-				Kind:     "ClusterRole",
-				Name:     m.config.GetClusterRoleName(),
-			},
-			Subjects: []rbacv1.Subject{
-				{
-					Kind:      "ServiceAccount",
-					Name:      m.config.GetServiceAccountName(),
-					Namespace: m.config.GetServiceAccountNamespace(),
-				},
-			},
+			RoleRef:  m.expectedRoleRef(),
+			Subjects: []rbacv1.Subject{m.expectedSubject()},
 		}
 
 		m.logger.V(0).Info("Creating role binding", "name", rbName, "namespace", namespace)
@@ -151,10 +140,10 @@ func (m *DefaultManager) Reconcile(ctx context.Context, env *v1.Environment) (*r
 		if err != nil {
 			// If the role binding already exists, try to get it and return it instead of failing
 			if errors.IsAlreadyExists(err) {
-				getErr := m.client.Get(ctx, types.NamespacedName{Name: rbName, Namespace: namespace}, roleBinding)
-				if getErr == nil {
-					return roleBinding, nil
+				if getErr := m.client.Get(ctx, types.NamespacedName{Name: rbName, Namespace: namespace}, roleBinding); getErr != nil {
+					return nil, fmt.Errorf("failed to get existing role binding after AlreadyExists error: %w", getErr)
 				}
+				return roleBinding, nil
 			}
 			return nil, fmt.Errorf("failed to create role binding: %w", err)
 		}
@@ -165,11 +154,7 @@ func (m *DefaultManager) Reconcile(ctx context.Context, env *v1.Environment) (*r
 			roleBinding.Labels = make(map[string]string)
 		}
 
-		labelMap := map[string]string{
-			"quix.io/environment-id":   env.Spec.Id,
-			"quix.io/managed-by":       "environment-operator",
-			"quix.io/environment-name": env.Name,
-		}
+		labelMap := m.expectedLabels(env)
 
 		for k, v := range labelMap {
 			if roleBinding.Labels[k] != v {
@@ -178,12 +163,14 @@ func (m *DefaultManager) Reconcile(ctx context.Context, env *v1.Environment) (*r
 			}
 		}
 
-		expectedSubject := rbacv1.Subject{
-			Kind:      "ServiceAccount",
-			Name:      m.config.GetServiceAccountName(),
-			Namespace: m.config.GetServiceAccountNamespace(),
-		}
+		expectedSubject := m.expectedSubject()
 
+		// Subject reconciliation contract (intentionally stateless): manually-added subjects are
+		// preserved ONLY while the expected ServiceAccount is still present among the subjects. If
+		// the expected ServiceAccount is absent (e.g. removed or its name/namespace changed), ALL
+		// subjects are replaced with just the expected ServiceAccount. Operators who add subjects
+		// manually must not remove the expected ServiceAccount, or their additions are dropped on
+		// the next reconcile. See docs/features/scoped-platform-rbac.md.
 		if len(roleBinding.Subjects) == 0 {
 			roleBinding.Subjects = []rbacv1.Subject{expectedSubject}
 			updated = true
@@ -199,16 +186,23 @@ func (m *DefaultManager) Reconcile(ctx context.Context, env *v1.Environment) (*r
 			}
 
 			if !hasExpectedServiceAccount {
+				// Stateless reconciliation contract: the operator guarantees the configured
+				// ServiceAccount is bound. Manually-added (out-of-band) subjects persist only while
+				// the expected SA is already present among the subjects; if the expected SA is
+				// absent (e.g. the configured SA name/namespace changed), the entire subject list is
+				// reset to just the expected SA. Warn so this destructive reset is observable.
+				removed := make([]string, 0, len(roleBinding.Subjects))
+				for _, s := range roleBinding.Subjects {
+					removed = append(removed, fmt.Sprintf("%s/%s/%s", s.Kind, s.Namespace, s.Name))
+				}
+				m.logger.V(0).Info("Replacing all RoleBinding subjects because the expected ServiceAccount is absent; manually-added subjects will be removed",
+					"name", roleBinding.Name, "namespace", roleBinding.Namespace, "removedSubjects", removed, "expectedServiceAccount", expectedSubject.Name)
 				roleBinding.Subjects = []rbacv1.Subject{expectedSubject}
 				updated = true
 			}
 		}
 
-		expectedRoleRef := rbacv1.RoleRef{
-			APIGroup: "rbac.authorization.k8s.io",
-			Kind:     "ClusterRole",
-			Name:     m.config.GetClusterRoleName(),
-		}
+		expectedRoleRef := m.expectedRoleRef()
 
 		if roleBinding.RoleRef.Name != expectedRoleRef.Name ||
 			roleBinding.RoleRef.Kind != expectedRoleRef.Kind ||
@@ -230,6 +224,24 @@ func (m *DefaultManager) Reconcile(ctx context.Context, env *v1.Environment) (*r
 
 			m.logger.V(0).Info("Recreating role binding with updated RoleRef", "name", rbName, "namespace", namespace)
 			if err := m.client.Create(ctx, roleBinding); err != nil {
+				if errors.IsAlreadyExists(err) {
+					if getErr := m.client.Get(ctx, types.NamespacedName{Name: rbName, Namespace: namespace}, roleBinding); getErr != nil {
+						return nil, fmt.Errorf("failed to get existing role binding after recreate AlreadyExists error: %w", getErr)
+					}
+					if roleBinding.RoleRef.Name != expectedRoleRef.Name ||
+						roleBinding.RoleRef.Kind != expectedRoleRef.Kind ||
+						roleBinding.RoleRef.APIGroup != expectedRoleRef.APIGroup {
+						return nil, fmt.Errorf("%w: role binding %s/%s still has RoleRef %s/%s/%s",
+							ErrRoleBindingRecreatePending,
+							namespace,
+							rbName,
+							roleBinding.RoleRef.APIGroup,
+							roleBinding.RoleRef.Kind,
+							roleBinding.RoleRef.Name)
+					}
+					updated = false
+					return roleBinding, nil
+				}
 				return nil, fmt.Errorf("failed to recreate role binding: %w", err)
 			}
 
@@ -245,4 +257,32 @@ func (m *DefaultManager) Reconcile(ctx context.Context, env *v1.Environment) (*r
 	}
 
 	return roleBinding, nil
+}
+
+// expectedLabels returns the canonical managed-by labels for an environment's RoleBinding. The
+// managed-by value is the literal "environment-operator" used for RoleBinding labels.
+func (m *DefaultManager) expectedLabels(env *v1.Environment) map[string]string {
+	return map[string]string{
+		namespace.LabelEnvironmentID:   env.Spec.Id,
+		namespace.ManagedByLabel:       ManagedByValue,
+		namespace.LabelEnvironmentName: env.Name,
+	}
+}
+
+// expectedSubject returns the ServiceAccount subject the RoleBinding must bind.
+func (m *DefaultManager) expectedSubject() rbacv1.Subject {
+	return rbacv1.Subject{
+		Kind:      "ServiceAccount",
+		Name:      m.config.GetServiceAccountName(),
+		Namespace: m.config.GetServiceAccountNamespace(),
+	}
+}
+
+// expectedRoleRef returns the RoleRef binding the configured platform ClusterRole.
+func (m *DefaultManager) expectedRoleRef() rbacv1.RoleRef {
+	return rbacv1.RoleRef{
+		APIGroup: "rbac.authorization.k8s.io",
+		Kind:     "ClusterRole",
+		Name:     m.config.GetClusterRoleName(),
+	}
 }
