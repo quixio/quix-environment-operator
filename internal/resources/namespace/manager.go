@@ -17,15 +17,14 @@ import (
 )
 
 const (
-	ManagedByLabel         = "quix.io/managed-by"
-	OperatorName           = "quix-environment-operator"
-	LabelEnvironmentID     = "quix.io/environment-id"
-	LabelEnvironmentName   = "quix.io/environment-name"
+	ManagedByLabel       = "quix.io/managed-by"
+	OperatorName         = "quix-environment-operator"
+	LabelEnvironmentID   = "quix.io/environment-id"
+	LabelEnvironmentName = "quix.io/environment-name"
 	// PlatformManagedByLabel marks namespaces for the platform trust-manager custom-CA Bundle (Quix 73259).
 	PlatformManagedByLabel = "ManagedBy"
 	PlatformManagedByValue = "Quix"
 	AnnotationCreatedBy    = "quix.io/created-by"
-	AnnotationCRDNamespace = "quix.io/environment-crd-namespace"
 	AnnotationResourceName = "quix.io/environment-resource-name"
 )
 
@@ -34,6 +33,9 @@ type DefaultManager struct {
 	client   client.Client
 	recorder record.EventRecorder
 	config   config.ConfigProvider
+	// envIdRegexp is the compiled environment ID validation pattern, or nil when no regex is
+	// configured. The pattern is immutable startup config, so it is compiled once here.
+	envIdRegexp *regexp.Regexp
 }
 
 // NewManager creates a new default namespace manager
@@ -42,11 +44,20 @@ func NewManager(
 	recorder record.EventRecorder,
 	config config.ConfigProvider,
 ) *DefaultManager {
-	return &DefaultManager{
+	m := &DefaultManager{
 		client:   client,
 		recorder: recorder,
 		config:   config,
 	}
+	// Compile the immutable environment ID regex once. The pattern is validated compilable at
+	// config load, so a compile error here is unreachable; leave envIdRegexp nil and fall back
+	// to per-call compilation defensively rather than changing the constructor signature.
+	if pattern := config.GetEnvironmentRegex(); pattern != "" {
+		if compiled, err := regexp.Compile(pattern); err == nil {
+			m.envIdRegexp = compiled
+		}
+	}
+	return m
 }
 
 // Exists checks if a namespace exists for an environment
@@ -95,9 +106,19 @@ func (m *DefaultManager) create(ctx context.Context, env *v1.Environment) (*core
 				return nil, fmt.Errorf("failed to get existing namespace after AlreadyExists error: %w", getErr)
 			}
 
-			// Check if the namespace is managed by us before making changes
-			if !m.IsManaged(env) {
-				return nil, fmt.Errorf("cannot use existing namespace %s: not managed by this operator", namespaceName)
+			// Check if the namespace is managed by us before making changes.
+			// Operate on the already-fetched object to avoid an extra Get / TOCTOU gap.
+			if existingNs.Labels == nil || existingNs.Labels[ManagedByLabel] != OperatorName {
+				return nil, fmt.Errorf("cannot use existing namespace %s: %w", namespaceName, ErrNamespaceNotManaged)
+			}
+
+			// Reject adoption when the namespace already belongs to a different Environment.
+			if !m.isOwnedBy(existingNs, env) {
+				m.recorder.Eventf(env, corev1.EventTypeWarning, "NamespaceOwnershipConflict",
+					"Namespace %s is owned by a different environment (id=%q name=%q) and will not be adopted",
+					namespaceName, existingNs.Labels[LabelEnvironmentID], existingNs.Labels[LabelEnvironmentName])
+				return nil, fmt.Errorf("cannot adopt namespace %s: %w (id=%q name=%q)",
+					namespaceName, ErrNamespaceOwnershipConflict, existingNs.Labels[LabelEnvironmentID], existingNs.Labels[LabelEnvironmentName])
 			}
 
 			if m.ApplyMetadata(env, existingNs) {
@@ -127,9 +148,19 @@ func (m *DefaultManager) update(ctx context.Context, env *v1.Environment) error 
 		return err
 	}
 
-	// Check if the namespace is managed by us before making changes
-	if !m.IsManaged(env) {
-		return fmt.Errorf("cannot update namespace %s: not managed by this operator", namespaceName)
+	// Check if the namespace is managed by us before making changes.
+	// Operate on the already-fetched object to avoid an extra Get / TOCTOU gap.
+	if namespace.Labels == nil || namespace.Labels[ManagedByLabel] != OperatorName {
+		return fmt.Errorf("cannot update namespace %s: %w", namespaceName, ErrNamespaceNotManaged)
+	}
+
+	// Reject when the namespace already belongs to a different Environment.
+	if !m.isOwnedBy(namespace, env) {
+		m.recorder.Eventf(env, corev1.EventTypeWarning, "NamespaceOwnershipConflict",
+			"Namespace %s is owned by a different environment (id=%q name=%q) and will not be updated",
+			namespaceName, namespace.Labels[LabelEnvironmentID], namespace.Labels[LabelEnvironmentName])
+		return fmt.Errorf("cannot adopt namespace %s: %w (id=%q name=%q)",
+			namespaceName, ErrNamespaceOwnershipConflict, namespace.Labels[LabelEnvironmentID], namespace.Labels[LabelEnvironmentName])
 	}
 
 	if m.ApplyMetadata(env, namespace) {
@@ -165,7 +196,23 @@ func (m *DefaultManager) Delete(ctx context.Context, env *v1.Environment) error 
 		logger.V(0).Info("Namespace is not managed by this operator, skipping deletion")
 		m.recorder.Eventf(env, corev1.EventTypeWarning, "NamespaceNotManaged",
 			"Namespace %s is not managed by this operator and will not be deleted", namespaceName)
-		return fmt.Errorf("namespace %s is not managed by this operator and will not be deleted", namespaceName)
+		return fmt.Errorf("namespace %s is %w and will not be deleted", namespaceName, ErrNamespaceNotManaged)
+	}
+
+	// Verify environment-id ownership before deleting (defense-in-depth against a
+	// pre-staged/hijacked namespace carrying our management label but a foreign identity).
+	//
+	// A namespace whose identity does not match this Environment is not ours to delete, so we
+	// return an error and leave it untouched. The reconciler's handleDeletion recognises this
+	// error (alongside the "not managed" case) and proceeds straight to finalizer removal
+	// instead of waiting for a namespace deletion that will never happen — so the foreign
+	// namespace is preserved and our own Environment still finalizes rather than wedging.
+	if !m.isOwnedBy(namespace, env) {
+		logger.V(0).Info("Namespace environment-id does not match this environment, refusing deletion")
+		m.recorder.Eventf(env, corev1.EventTypeWarning, "NamespaceEnvironmentIDMismatch",
+			"Namespace %s is owned by a different environment (id=%q name=%q) and will not be deleted",
+			namespaceName, namespace.Labels[LabelEnvironmentID], namespace.Labels[LabelEnvironmentName])
+		return fmt.Errorf("namespace %s %w, refusing deletion", namespaceName, ErrNamespaceEnvironmentIDMismatch)
 	}
 
 	// Proceed with deletion
@@ -200,20 +247,21 @@ func (m *DefaultManager) Get(ctx context.Context, env *v1.Environment) (*corev1.
 	return namespace, nil
 }
 
-// IsManaged checks if a namespace is managed by this operator
-func (m *DefaultManager) IsManaged(env *v1.Environment) bool {
-	if env == nil {
-		return false
+// isOwnedBy reports whether an already-fetched, operator-managed namespace belongs to env.
+// Ownership is determined by the identity labels (environment-id and environment-name).
+// A managed namespace whose identity labels are BOTH empty/absent is treated as adoptable
+// (first-time claim, e.g. legacy namespaces created before identity labels were applied);
+// otherwise both identity labels must match exactly.
+func (m *DefaultManager) isOwnedBy(ns *corev1.Namespace, env *v1.Environment) bool {
+	existingID := ns.Labels[LabelEnvironmentID]
+	existingName := ns.Labels[LabelEnvironmentName]
+
+	// Adoptable: managed namespace with no identity yet.
+	if existingID == "" && existingName == "" {
+		return true
 	}
 
-	ctx := context.Background()
-	namespace, err := m.Get(ctx, env)
-	if err != nil || namespace == nil {
-		return false
-	}
-
-	// A namespace is considered managed if it has our management label
-	return namespace.Labels != nil && namespace.Labels[ManagedByLabel] == OperatorName
+	return existingID == env.Spec.Id && existingName == env.Name
 }
 
 // IsDeleting checks if a namespace is deleting
@@ -269,7 +317,7 @@ func (m *DefaultManager) ApplyMetadata(env *v1.Environment, namespace *corev1.Na
 	// Apply custom labels from Environment
 	for key, value := range env.Spec.Labels {
 		// Skip protected labels
-		if isProtectedLabel(key, protectedLabels) {
+		if isProtectedKey(key, protectedLabels) {
 			continue
 		}
 
@@ -293,7 +341,6 @@ func (m *DefaultManager) ApplyMetadata(env *v1.Environment, namespace *corev1.Na
 	// Ensure required annotations are set
 	requiredAnnotations := map[string]string{
 		AnnotationCreatedBy:    OperatorName,
-		AnnotationCRDNamespace: env.Namespace,
 		AnnotationResourceName: env.Name,
 	}
 
@@ -307,14 +354,13 @@ func (m *DefaultManager) ApplyMetadata(env *v1.Environment, namespace *corev1.Na
 	// Define a list of protected annotations that cannot be overridden
 	protectedAnnotations := []string{
 		AnnotationCreatedBy,
-		AnnotationCRDNamespace,
 		AnnotationResourceName,
 	}
 
 	// Apply custom annotations from Environment
 	for key, value := range env.Spec.Annotations {
 		// Skip protected annotations
-		if isProtectedAnnotation(key, protectedAnnotations) {
+		if isProtectedKey(key, protectedAnnotations) {
 			continue
 		}
 
@@ -329,22 +375,82 @@ func (m *DefaultManager) ApplyMetadata(env *v1.Environment, namespace *corev1.Na
 		}
 	}
 
+	if ensureOwnerReference(env, namespace) {
+		needsUpdate = true
+	}
+
 	return needsUpdate
 }
 
-// isProtectedLabel checks if the given key is in the list of protected labels
-func isProtectedLabel(key string, protectedLabels []string) bool {
-	for _, protectedKey := range protectedLabels {
-		if key == protectedKey {
-			return true
-		}
+// ensureOwnerReference sets a controller owner reference to the Environment so Kubernetes
+// garbage collection can reclaim the namespace as a fallback if the operator is down during
+// Environment deletion. The finalizer-driven Delete() remains the primary cleanup path. The
+// Environment is cluster-scoped like the Namespace, so this owner reference is valid. The
+// RoleBinding is intentionally NOT given an Environment owner reference: it lives in this
+// namespace and is reclaimed automatically when the namespace is deleted.
+func ensureOwnerReference(env *v1.Environment, namespace *corev1.Namespace) bool {
+	if env.UID == "" {
+		return false
 	}
-	return false
+
+	expected := environmentOwnerReference(env)
+	changed := false
+	found := false
+	ownerReferences := namespace.OwnerReferences[:0]
+
+	for _, ref := range namespace.OwnerReferences {
+		if ref.APIVersion != expected.APIVersion || ref.Kind != expected.Kind {
+			ownerReferences = append(ownerReferences, ref)
+			continue
+		}
+
+		if found {
+			changed = true
+			continue
+		}
+
+		if ref.UID != expected.UID ||
+			ref.Name != expected.Name ||
+			ref.Controller == nil || !*ref.Controller ||
+			ref.BlockOwnerDeletion == nil || !*ref.BlockOwnerDeletion {
+			ownerReferences = append(ownerReferences, expected)
+			changed = true
+		} else {
+			ownerReferences = append(ownerReferences, ref)
+		}
+
+		found = true
+	}
+
+	if !found {
+		ownerReferences = append(ownerReferences, expected)
+		changed = true
+	}
+
+	if changed {
+		namespace.OwnerReferences = ownerReferences
+	}
+	return changed
 }
 
-// isProtectedAnnotation checks if the given key is in the list of protected annotations
-func isProtectedAnnotation(key string, protectedAnnotations []string) bool {
-	for _, protectedKey := range protectedAnnotations {
+func environmentOwnerReference(env *v1.Environment) metav1.OwnerReference {
+	isController := true
+	blockOwnerDeletion := true
+
+	return metav1.OwnerReference{
+		APIVersion:         v1.GroupVersion.String(),
+		Kind:               "Environment",
+		Name:               env.Name,
+		UID:                env.UID,
+		Controller:         &isController,
+		BlockOwnerDeletion: &blockOwnerDeletion,
+	}
+}
+
+// isProtectedKey checks if the given key is in the list of protected keys. It is used for both
+// protected labels and protected annotations, which share identical membership semantics.
+func isProtectedKey(key string, protectedKeys []string) bool {
+	for _, protectedKey := range protectedKeys {
 		if key == protectedKey {
 			return true
 		}
@@ -358,7 +464,9 @@ func isValidLabelPrefix(key string) bool {
 	return len(key) > len(validPrefix) && key[:len(validPrefix)] == validPrefix
 }
 
-// GetNamespaceName returns the standardized name for the environment namespace
+// GetNamespaceName returns the standardized name for the environment namespace.
+// It is a pure getter: it returns the persisted ResourceName when set, otherwise
+// the computed convention name. It never mutates env.Status.
 func (m *DefaultManager) GetNamespaceName(env *v1.Environment) string {
 	// Use stored namespace name if available
 	if env.Status.NamespaceStatus != nil && env.Status.NamespaceStatus.ResourceName != "" {
@@ -366,11 +474,7 @@ func (m *DefaultManager) GetNamespaceName(env *v1.Environment) string {
 	}
 
 	// Otherwise use the default naming convention
-	if env.Status.NamespaceStatus == nil {
-		env.Status.NamespaceStatus = &v1.ResourceStatus{}
-	}
-	env.Status.NamespaceStatus.ResourceName = fmt.Sprintf("%s%s", env.Spec.Id, m.config.GetNamespaceSuffix())
-	return env.Status.NamespaceStatus.ResourceName
+	return fmt.Sprintf("%s%s", env.Spec.Id, m.config.GetNamespaceSuffix())
 }
 
 // isValidEnvironmentId checks if the environment ID matches the configured regex pattern
@@ -380,10 +484,16 @@ func (m *DefaultManager) isValidEnvironmentId(envId string) (bool, error) {
 		return true, nil
 	}
 
-	// Compile the regex pattern
-	pattern, err := regexp.Compile(m.config.GetEnvironmentRegex())
-	if err != nil {
-		return false, fmt.Errorf("invalid environment regex pattern: %w", err)
+	// Use the pattern compiled once at construction. It is nil only in the unreachable case where
+	// the pre-validated pattern failed to compile there; fall back to per-call compilation so
+	// validation semantics are preserved.
+	pattern := m.envIdRegexp
+	if pattern == nil {
+		var err error
+		pattern, err = regexp.Compile(m.config.GetEnvironmentRegex())
+		if err != nil {
+			return false, fmt.Errorf("invalid environment regex pattern: %w", err)
+		}
 	}
 
 	// Check if the environment ID matches the pattern
@@ -394,7 +504,7 @@ func (m *DefaultManager) isValidEnvironmentId(envId string) (bool, error) {
 func (m *DefaultManager) Reconcile(ctx context.Context, env *v1.Environment) (*corev1.Namespace, error) {
 	namespaceName := m.GetNamespaceName(env)
 	logger := log.FromContext(ctx).WithValues("namespace", namespaceName)
-	logger.Info("Reconciling namespace")
+	logger.V(1).Info("Reconciling namespace")
 
 	// Check if namespace exists
 	exists, err := m.Exists(ctx, env)

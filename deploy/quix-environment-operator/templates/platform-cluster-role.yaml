@@ -24,13 +24,23 @@ rules:
 - apiGroups: ["networking.k8s.io"]
   resources: ["ingresses", "networkpolicies"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-# Allow users to execute pods for debugging
+# Allow users to read pod logs and status for debugging (lower risk than exec)
 - apiGroups: [""]
-  resources: ["pods/exec", "pods/log"]
-  verbs: ["get", "list", "create"] 
+  resources: ["pods/log"]
+  verbs: ["get", "list"]
 - apiGroups: [""]
   resources: ["pods/status"]
   verbs: ["get"]
+{{- if .Values.env.allowPodsExec }}
+# SECURITY: pods/exec lets every subject bound to this role run arbitrary commands inside any
+# running container in their namespace, bypassing image-level controls. Kubernetes has no
+# per-call exec audit unless cluster audit-policy is configured (outside this chart). The grant
+# is scoped to a single namespace via the per-environment RoleBinding. Disable it by setting
+# env.allowPodsExec=false.
+- apiGroups: [""]
+  resources: ["pods/exec"]
+  verbs: ["get", "list", "create"]
+{{- end }}
 # Allow management of Prometheus monitoring resources for PVC metrics sidecars
 - apiGroups: ["monitoring.coreos.com"]
   resources: ["podmonitors", "servicemonitors"]

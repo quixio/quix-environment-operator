@@ -199,8 +199,10 @@ var _ = Describe("Environment Resource Status Phases", func() {
 				Config.ClusterRoleName = originalClusterRole
 			}()
 
-			// Change the ClusterRole to a non-existent one
-			Config.ClusterRoleName = "non-existent-role-for-status-test"
+			// Change the ClusterRole to a non-existent one whose name contains "namespace".
+			// A RoleBinding failure message must not be attributed to NamespaceStatus just
+			// because free-form error text includes that substring.
+			Config.ClusterRoleName = "namespace-missing-role-for-status-test"
 
 			// Create test environment with the invalid ClusterRole
 			env := createIntegrationTestEnvironment("test-rb-status-fail", nil, nil)
@@ -237,6 +239,18 @@ var _ = Describe("Environment Resource Status Phases", func() {
 				}
 				return createdEnv.Status.RoleBindingStatus.Phase
 			}, timeout, interval).Should(Equal(quixiov1.ResourceStatusPhaseFailed))
+
+			By("Verifying NamespaceStatus remains Active after the role binding failure")
+			Eventually(func() quixiov1.ResourceStatusPhase {
+				createdEnv := &quixiov1.Environment{}
+				if err := k8sClient.Get(ctx, envLookupKey, createdEnv); err != nil {
+					return ""
+				}
+				if createdEnv.Status.NamespaceStatus == nil {
+					return ""
+				}
+				return createdEnv.Status.NamespaceStatus.Phase
+			}, timeout, interval).Should(Equal(quixiov1.ResourceStatusPhaseActive))
 
 			// Verify the overall Environment status is Failed
 			Eventually(func() quixiov1.EnvironmentPhase {
@@ -351,7 +365,7 @@ var _ = Describe("Environment Resource Status Phases", func() {
 	})
 
 	Context("When reconciling with existing ResourceStatus phases", func() {
-		It("Should not overwrite more specific ResourceStatus phase information", func() {
+		It("Should recover stale Failed ResourceStatus phase information after a successful reconcile", func() {
 			ctx := context.Background()
 
 			// 1. Create test environment
@@ -398,18 +412,25 @@ var _ = Describe("Environment Resource Status Phases", func() {
 
 			// 4. Update a label to trigger reconciliation while keeping environment in Ready state
 			By("Triggering reconciliation by updating labels")
-			updatedEnv := &quixiov1.Environment{}
-			Expect(k8sClient.Get(ctx, envLookupKey, updatedEnv)).Should(Succeed())
+			var updatedEnv *quixiov1.Environment
+			Eventually(func() bool {
+				latest := &quixiov1.Environment{}
+				if err := k8sClient.Get(ctx, envLookupKey, latest); err != nil {
+					return false
+				}
+				if latest.Labels == nil {
+					latest.Labels = make(map[string]string)
+				}
+				latest.Labels["test-reconcile"] = "trigger-reconcile"
+				if err := k8sClient.Update(ctx, latest); err != nil {
+					return false
+				}
+				updatedEnv = latest
+				return true
+			}, timeout, interval).Should(BeTrue())
 
-			if updatedEnv.Labels == nil {
-				updatedEnv.Labels = make(map[string]string)
-			}
-			updatedEnv.Labels["test-reconcile"] = "trigger-reconcile"
-
-			Expect(k8sClient.Update(ctx, updatedEnv)).Should(Succeed())
-
-			// 5. Wait for reconciliation to complete and verify Failed status is preserved
-			By("Verifying that Failed status is preserved after reconciliation")
+			// 5. Wait for reconciliation to complete and verify the stale Failed status is healed
+			By("Verifying that Failed status recovers after reconciliation")
 			Eventually(func() bool {
 				reconciledEnv := &quixiov1.Environment{}
 				if err := k8sClient.Get(ctx, envLookupKey, reconciledEnv); err != nil {
@@ -421,16 +442,136 @@ var _ = Describe("Environment Resource Status Phases", func() {
 					return false
 				}
 
-				// Check RoleBindingStatus is still Failed
+				// Check RoleBindingStatus recovers to Active
 				if reconciledEnv.Status.RoleBindingStatus == nil {
 					return false
 				}
 
-				return reconciledEnv.Status.RoleBindingStatus.Phase == quixiov1.ResourceStatusPhaseFailed
-			}, timeout, interval).Should(BeTrue(), "Failed ResourceStatus was overwritten during reconciliation")
+				return reconciledEnv.Status.RoleBindingStatus.Phase == quixiov1.ResourceStatusPhaseActive
+			}, timeout, interval).Should(BeTrue(), "Failed ResourceStatus was not recovered during reconciliation")
 
 			// Clean up
 			Expect(k8sClient.Delete(ctx, updatedEnv)).Should(Succeed())
+		})
+
+		It("Should set missing RoleBindingStatus to Failed on role binding reconciliation failure", func() {
+			ctx := context.Background()
+
+			originalClusterRole := Config.ClusterRoleName
+			defer func() {
+				Config.ClusterRoleName = originalClusterRole
+			}()
+
+			env := createIntegrationTestEnvironment("test-missing-rb-status", nil, nil)
+			Expect(k8sClient.Create(ctx, env)).Should(Succeed())
+
+			envLookupKey := types.NamespacedName{
+				Name:      env.Name,
+				Namespace: testNamespace,
+			}
+
+			By("Waiting for environment to be Ready")
+			Eventually(func() quixiov1.EnvironmentPhase {
+				createdEnv := &quixiov1.Environment{}
+				if err := k8sClient.Get(ctx, envLookupKey, createdEnv); err != nil {
+					return ""
+				}
+				return createdEnv.Status.Phase
+			}, timeout, interval).Should(Equal(quixiov1.EnvironmentPhaseReady))
+
+			By("Removing RoleBindingStatus and triggering a role binding failure")
+			modifiedEnv := &quixiov1.Environment{}
+			Expect(k8sClient.Get(ctx, envLookupKey, modifiedEnv)).Should(Succeed())
+			modifiedEnv.Status.RoleBindingStatus = nil
+			Expect(k8sClient.Status().Update(ctx, modifiedEnv)).Should(Succeed())
+
+			Config.ClusterRoleName = "namespace-missing-role-for-nil-status-test"
+
+			Eventually(func() bool {
+				latest := &quixiov1.Environment{}
+				if err := k8sClient.Get(ctx, envLookupKey, latest); err != nil {
+					return false
+				}
+				if latest.Labels == nil {
+					latest.Labels = make(map[string]string)
+				}
+				latest.Labels["test-reconcile"] = "trigger-missing-rb-status"
+				return k8sClient.Update(ctx, latest) == nil
+			}, timeout, interval).Should(BeTrue())
+
+			By("Verifying the missing RoleBindingStatus is explicitly marked Failed")
+			Eventually(func() quixiov1.ResourceStatusPhase {
+				createdEnv := &quixiov1.Environment{}
+				if err := k8sClient.Get(ctx, envLookupKey, createdEnv); err != nil {
+					return ""
+				}
+				if createdEnv.Status.RoleBindingStatus == nil {
+					return ""
+				}
+				return createdEnv.Status.RoleBindingStatus.Phase
+			}, timeout, interval).Should(Equal(quixiov1.ResourceStatusPhaseFailed))
+
+			Config.ClusterRoleName = originalClusterRole
+			Expect(k8sClient.Delete(ctx, env)).Should(Succeed())
+		})
+
+		It("Should recover Failed environment and sub-resource statuses after a transient role binding failure", func() {
+			ctx := context.Background()
+
+			originalClusterRole := Config.ClusterRoleName
+			defer func() {
+				Config.ClusterRoleName = originalClusterRole
+			}()
+
+			Config.ClusterRoleName = "namespace-transient-missing-role"
+
+			env := createIntegrationTestEnvironment("test-rb-status-recover", nil, nil)
+			Expect(k8sClient.Create(ctx, env)).Should(Succeed())
+
+			envLookupKey := types.NamespacedName{
+				Name:      env.Name,
+				Namespace: testNamespace,
+			}
+
+			By("Waiting for the transient role binding failure")
+			Eventually(func() bool {
+				createdEnv := &quixiov1.Environment{}
+				if err := k8sClient.Get(ctx, envLookupKey, createdEnv); err != nil {
+					return false
+				}
+				return createdEnv.Status.Phase == quixiov1.EnvironmentPhaseFailed &&
+					createdEnv.Status.RoleBindingStatus != nil &&
+					createdEnv.Status.RoleBindingStatus.Phase == quixiov1.ResourceStatusPhaseFailed
+			}, timeout, interval).Should(BeTrue())
+
+			By("Restoring the ClusterRole and triggering reconciliation")
+			Config.ClusterRoleName = originalClusterRole
+			Eventually(func() bool {
+				latest := &quixiov1.Environment{}
+				if err := k8sClient.Get(ctx, envLookupKey, latest); err != nil {
+					return false
+				}
+				if latest.Labels == nil {
+					latest.Labels = make(map[string]string)
+				}
+				latest.Labels["test-reconcile"] = "trigger-rb-status-recovery"
+				return k8sClient.Update(ctx, latest) == nil
+			}, timeout, interval).Should(BeTrue())
+
+			By("Verifying the environment and sub-resource statuses recover")
+			Eventually(func() bool {
+				createdEnv := &quixiov1.Environment{}
+				if err := k8sClient.Get(ctx, envLookupKey, createdEnv); err != nil {
+					return false
+				}
+				return createdEnv.Status.Phase == quixiov1.EnvironmentPhaseReady &&
+					createdEnv.Status.NamespaceStatus != nil &&
+					createdEnv.Status.NamespaceStatus.Phase == quixiov1.ResourceStatusPhaseActive &&
+					createdEnv.Status.RoleBindingStatus != nil &&
+					createdEnv.Status.RoleBindingStatus.Phase == quixiov1.ResourceStatusPhaseActive
+			}, timeout, interval).Should(BeTrue())
+
+			Expect(k8sClient.Delete(ctx, env)).Should(Succeed())
 		})
 	})
 

@@ -118,7 +118,6 @@ var _ = BeforeSuite(func() {
 		ServiceAccountName:      "test-service-account",
 		ServiceAccountNamespace: "default",
 		ClusterRoleName:         "test-cluster-role",
-		ReconcileInterval:       time.Millisecond * 250, // Faster reconciliation for tests
 		MaxConcurrentReconciles: 5,
 	}
 
