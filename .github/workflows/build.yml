@@ -197,6 +197,12 @@ jobs:
         with:
           version: 'latest'
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
       - name: Add dependency repositories
         run: |
           helm repo add bitnami https://charts.bitnami.com/bitnami
@@ -324,12 +330,15 @@ jobs:
           CHART_FILE=$(basename $(find .cr-release-packages -name "*.tgz"))
           echo "Chart file: ${CHART_FILE}"
           
-          # Clone gh-pages branch 
+          # Publish from a separate gh-pages worktree so source-branch Chart.yaml changes do not
+          # block checkout.
           git fetch origin gh-pages
-          git checkout gh-pages
+          GH_PAGES_DIR="$(mktemp -d)"
+          git worktree add --detach "${GH_PAGES_DIR}" origin/gh-pages
           
           # Copy packaged chart
-          cp .cr-release-packages/*.tgz .
+          cp .cr-release-packages/*.tgz "${GH_PAGES_DIR}/"
+          cd "${GH_PAGES_DIR}"
           
           # Create or update the Helm repo index file on gh-pages
           # Important: Use the URL that refers directly to files in gh-pages, not GitHub releases
@@ -343,8 +352,12 @@ jobs:
           
           # Commit and push to gh-pages
           git add .
-          git commit -m "Update Helm chart release [skip ci]"
-          git push origin gh-pages
+          if git diff --cached --quiet; then
+            echo "No Helm chart changes to publish"
+          else
+            git commit -m "Update Helm chart release [skip ci]"
+            git push origin HEAD:gh-pages
+          fi
           
           echo "Manually published chart to GitHub Pages at https://quixio.github.io/quix-environment-operator/${CHART_FILE}"
 

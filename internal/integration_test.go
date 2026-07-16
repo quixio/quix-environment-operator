@@ -18,7 +18,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	quixiov1 "github.com/quix-analytics/quix-environment-operator/api/v1"
+	qctrl "github.com/quix-analytics/quix-environment-operator/internal/controller/environment"
+	namespaceresource "github.com/quix-analytics/quix-environment-operator/internal/resources/namespace"
+	rolebindingresource "github.com/quix-analytics/quix-environment-operator/internal/resources/rolebinding"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
@@ -71,6 +75,27 @@ func IsRoleBindingValid(rb *rbacv1.RoleBinding, err error, expectedClusterRole, 
 	}
 
 	return false
+}
+
+// finalizeNamespaceDeletion mimics the cluster namespace controller, which envtest does
+// not run: it clears the namespace's spec finalizers via the /finalize subresource so a
+// namespace marked for deletion is actually reaped. This lets the environment deletion
+// handler observe the namespace as gone and proceed to remove the environment finalizer.
+func finalizeNamespaceDeletion(ctx context.Context, nsName string) {
+	clientset, err := kubernetes.NewForConfig(cfg)
+	Expect(err).NotTo(HaveOccurred())
+
+	ns, err := clientset.CoreV1().Namespaces().Get(ctx, nsName, metav1.GetOptions{})
+	if errors.IsNotFound(err) {
+		return
+	}
+	Expect(err).NotTo(HaveOccurred())
+
+	ns.Spec.Finalizers = nil
+	_, err = clientset.CoreV1().Namespaces().Finalize(ctx, ns, metav1.UpdateOptions{})
+	if err != nil && !errors.IsNotFound(err) {
+		Expect(err).NotTo(HaveOccurred())
+	}
 }
 
 var _ = Describe("Environment controller integration tests", func() {
@@ -421,6 +446,71 @@ var _ = Describe("Environment controller integration tests", func() {
 				nsGetErr := k8sClient.Get(ctx, nsLookupKey, createdNs)
 				return IsNamespaceDeleted(createdNs, nsGetErr)
 			}, deletionTimeout, interval).Should(BeTrue(), "Namespace was not deleted")
+		})
+
+		It("Should add an Environment owner reference when adopting a managed namespace", func() {
+			ctx := context.Background()
+
+			adoptedID := "test-adopt-owner"
+			nsName := fmt.Sprintf("%s%s", adoptedID, Config.NamespaceSuffix)
+			preExistingNs := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: nsName,
+					Labels: map[string]string{
+						namespaceresource.ManagedByLabel: namespaceresource.OperatorName,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, preExistingNs)).Should(Succeed())
+
+			env := createIntegrationTestEnvironment(adoptedID, nil, nil)
+			Expect(k8sClient.Create(ctx, env)).Should(Succeed())
+
+			envLookupKey := types.NamespacedName{Name: env.Name, Namespace: testNamespace}
+			createdEnv := &quixiov1.Environment{}
+			Eventually(func() quixiov1.EnvironmentPhase {
+				if err := k8sClient.Get(ctx, envLookupKey, createdEnv); err != nil {
+					return ""
+				}
+				return createdEnv.Status.Phase
+			}, timeout, interval).Should(Equal(quixiov1.EnvironmentPhaseReady))
+
+			nsLookupKey := types.NamespacedName{Name: nsName}
+			Eventually(func() bool {
+				adoptedNs := &corev1.Namespace{}
+				if err := k8sClient.Get(ctx, nsLookupKey, adoptedNs); err != nil {
+					return false
+				}
+				ref := metav1.GetControllerOf(adoptedNs)
+				return ref != nil &&
+					ref.APIVersion == quixiov1.GroupVersion.String() &&
+					ref.Kind == "Environment" &&
+					ref.Name == createdEnv.Name &&
+					ref.UID == createdEnv.UID &&
+					ref.Controller != nil && *ref.Controller &&
+					ref.BlockOwnerDeletion != nil && *ref.BlockOwnerDeletion
+			}, timeout, interval).Should(BeTrue(), "Adopted namespace did not receive the Environment controller owner reference")
+
+			Expect(k8sClient.Delete(ctx, env)).Should(Succeed())
+			Eventually(func() bool {
+				adoptedNs := &corev1.Namespace{}
+				err := k8sClient.Get(ctx, nsLookupKey, adoptedNs)
+				if errors.IsNotFound(err) {
+					return true
+				}
+				if err != nil {
+					return false
+				}
+				if adoptedNs.DeletionTimestamp != nil {
+					finalizeNamespaceDeletion(ctx, nsName)
+				}
+				return false
+			}, deletionTimeout, interval).Should(BeTrue(), "Adopted namespace was not deleted")
+			Eventually(func() bool {
+				deletedEnv := &quixiov1.Environment{}
+				err := k8sClient.Get(ctx, envLookupKey, deletedEnv)
+				return errors.IsNotFound(err)
+			}, deletionTimeout, interval).Should(BeTrue(), "Environment finalizer was not removed after adopted namespace deletion")
 		})
 
 		It("Should reject Environment name changes after creation", func() {
@@ -927,6 +1017,75 @@ var _ = Describe("Environment controller integration tests", func() {
 			}, deletionTimeout, interval).Should(BeTrue(), "Namespace deletion was not initiated")
 		})
 
+		It("Should recreate a managed RoleBinding deleted out of band", func() {
+			ctx := context.Background()
+
+			env := createIntegrationTestEnvironment("test-rb-drift", nil, nil)
+			Expect(k8sClient.Create(ctx, env)).Should(Succeed())
+
+			nsName := fmt.Sprintf("%s%s", env.Spec.Id, Config.NamespaceSuffix)
+			rbLookupKey := types.NamespacedName{
+				Name:      fmt.Sprintf("%s-quix-crb", env.Spec.Id),
+				Namespace: nsName,
+			}
+			envLookupKey := types.NamespacedName{Name: env.Name, Namespace: testNamespace}
+
+			Eventually(func() quixiov1.EnvironmentPhase {
+				createdEnv := &quixiov1.Environment{}
+				if err := k8sClient.Get(ctx, envLookupKey, createdEnv); err != nil {
+					return ""
+				}
+				return createdEnv.Status.Phase
+			}, timeout, interval).Should(Equal(quixiov1.EnvironmentPhaseReady))
+
+			rb := &rbacv1.RoleBinding{}
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, rbLookupKey, rb)
+				return IsRoleBindingValid(rb, err, Config.ClusterRoleName,
+					Config.ServiceAccountName,
+					Config.ServiceAccountNamespace)
+			}, timeout, interval).Should(BeTrue(), "RoleBinding not correctly configured before drift")
+			Expect(rb.Labels["quix.io/managed-by"]).To(Equal(rolebindingresource.ManagedByValue), "Managed-by label is incorrect")
+			originalUID := rb.UID
+
+			Expect(k8sClient.Delete(ctx, rb)).Should(Succeed())
+
+			Eventually(func() types.UID {
+				recreated := &rbacv1.RoleBinding{}
+				err := k8sClient.Get(ctx, rbLookupKey, recreated)
+				if !IsRoleBindingValid(recreated, err, Config.ClusterRoleName,
+					Config.ServiceAccountName,
+					Config.ServiceAccountNamespace) {
+					return ""
+				}
+				return recreated.UID
+			}, 750*time.Millisecond, 50*time.Millisecond).ShouldNot(Equal(originalUID), "RoleBinding was not recreated from its watch event")
+
+			Expect(k8sClient.Delete(ctx, env)).Should(Succeed())
+		})
+
+		It("Should not requeue an unchanged Ready Environment", func() {
+			ctx := context.Background()
+
+			env := createIntegrationTestEnvironment("test-no-steady-requeue", nil, nil)
+			Expect(k8sClient.Create(ctx, env)).Should(Succeed())
+
+			envLookupKey := types.NamespacedName{Name: env.Name, Namespace: testNamespace}
+			Eventually(func() quixiov1.EnvironmentPhase {
+				createdEnv := &quixiov1.Environment{}
+				if err := k8sClient.Get(ctx, envLookupKey, createdEnv); err != nil {
+					return ""
+				}
+				return createdEnv.Status.Phase
+			}, timeout, interval).Should(Equal(quixiov1.EnvironmentPhaseReady))
+
+			result, err := Controller.Reconcile(ctx, ctrl.Request{NamespacedName: envLookupKey})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(ctrl.Result{}))
+
+			Expect(k8sClient.Delete(ctx, env)).Should(Succeed())
+		})
+
 		It("Should handle deletion when namespace is not managed by operator", func() {
 			ctx := context.Background()
 
@@ -1011,6 +1170,66 @@ var _ = Describe("Environment controller integration tests", func() {
 			}, deletionTimeout, interval).Should(BeTrue(), "Pre-existing namespace was not deleted during cleanup")
 		})
 
+		It("Should finalize an Environment without deleting a namespace owned by a different Environment", func() {
+			ctx := context.Background()
+
+			// Pre-create a namespace at this Environment's deterministic name that carries our
+			// management label but a FOREIGN identity (a pre-staged/hijacked namespace).
+			foreignId := "test-foreign-owned-ns"
+			nsName := fmt.Sprintf("%s%s", foreignId, Config.NamespaceSuffix)
+			preExistingNs := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: nsName,
+					Labels: map[string]string{
+						"quix.io/managed-by":       "quix-environment-operator",
+						"quix.io/environment-id":   "some-other-environment-id",
+						"quix.io/environment-name": "some-other-environment",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, preExistingNs)).Should(Succeed())
+
+			// Create an Environment whose deterministic namespace name collides with the foreign one.
+			env := createIntegrationTestEnvironment(foreignId, nil, nil)
+			Expect(k8sClient.Create(ctx, env)).Should(Succeed())
+
+			// The Environment reconciles (acquiring its finalizer) but cannot adopt the foreign
+			// namespace, so it lands in Failed.
+			envLookupKey := types.NamespacedName{Name: env.Name, Namespace: testNamespace}
+			createdEnv := &quixiov1.Environment{}
+			Eventually(func() quixiov1.EnvironmentPhase {
+				if err := k8sClient.Get(ctx, envLookupKey, createdEnv); err != nil {
+					return ""
+				}
+				return createdEnv.Status.Phase
+			}, timeout, interval).Should(Equal(quixiov1.EnvironmentPhaseFailed))
+
+			// Deleting the Environment must NOT wedge: handleDeletion sees the foreign namespace,
+			// refuses to delete it, and proceeds to finalizer removal so the Environment is reaped.
+			Expect(k8sClient.Delete(ctx, createdEnv)).Should(Succeed())
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, envLookupKey, createdEnv)
+				return errors.IsNotFound(err)
+			}, deletionTimeout, interval).Should(BeTrue(),
+				"Environment must finalize (not wedge) even when its namespace is owned by another Environment")
+
+			// The foreign namespace must be left intact.
+			nsLookupKey := types.NamespacedName{Name: nsName}
+			existingNs := &corev1.Namespace{}
+			Expect(k8sClient.Get(ctx, nsLookupKey, existingNs)).NotTo(HaveOccurred(),
+				"Foreign namespace must not be deleted")
+			Expect(existingNs.DeletionTimestamp).To(BeNil(),
+				"Foreign namespace must not be marked for deletion")
+			Expect(existingNs.Labels["quix.io/environment-id"]).To(Equal("some-other-environment-id"))
+
+			// Clean up.
+			Expect(k8sClient.Delete(ctx, existingNs)).Should(Succeed())
+			Eventually(func() bool {
+				nsGetErr := k8sClient.Get(ctx, nsLookupKey, existingNs)
+				return IsNamespaceDeleted(existingNs, nsGetErr)
+			}, deletionTimeout, interval).Should(BeTrue(), "Foreign namespace was not deleted during cleanup")
+		})
+
 		It("Should use the stored namespace name during deletion when suffix changes", func() {
 			ctx := context.Background()
 
@@ -1092,6 +1311,105 @@ var _ = Describe("Environment controller integration tests", func() {
 			// The wrong namespace should remain non-existent (it was never created)
 			err = k8sClient.Get(ctx, wrongNsLookupKey, wrongNs)
 			Expect(errors.IsNotFound(err)).To(BeTrue(), "The wrong namespace should still not exist")
+		})
+
+		It("Should keep the stored namespace name during re-reconcile when suffix changes", func() {
+			ctx := context.Background()
+
+			// Create a test environment
+			env := createIntegrationTestEnvironment("test-ns-suffix-rereconcile", nil, nil)
+			Expect(k8sClient.Create(ctx, env)).Should(Succeed())
+
+			// Original namespace name with current suffix
+			originalNsName := fmt.Sprintf("%s%s", "test-ns-suffix-rereconcile", Config.NamespaceSuffix)
+			nsLookupKey := types.NamespacedName{Name: originalNsName}
+
+			// Wait for namespace to be created
+			createdNs := &corev1.Namespace{}
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, nsLookupKey, createdNs)
+				return err == nil
+			}, timeout, interval).Should(BeTrue(), "Namespace was not created")
+
+			// Wait for environment to be Ready
+			envLookupKey := types.NamespacedName{
+				Name:      env.Name,
+				Namespace: testNamespace,
+			}
+			Eventually(func() quixiov1.EnvironmentPhase {
+				createdEnv := &quixiov1.Environment{}
+				if err := k8sClient.Get(ctx, envLookupKey, createdEnv); err != nil {
+					return ""
+				}
+				return createdEnv.Status.Phase
+			}, timeout, interval).Should(Equal(quixiov1.EnvironmentPhaseReady))
+
+			// Capture the persisted namespace name
+			createdEnv := &quixiov1.Environment{}
+			Expect(k8sClient.Get(ctx, envLookupKey, createdEnv)).Should(Succeed())
+			Expect(createdEnv.Status.NamespaceStatus).ToNot(BeNil())
+			Expect(createdEnv.Status.NamespaceStatus.ResourceName).To(Equal(originalNsName))
+
+			// Save original namespace suffix for restoration
+			originalSuffix := Config.NamespaceSuffix
+			defer func() {
+				Config.NamespaceSuffix = originalSuffix
+			}()
+
+			// Change the namespace suffix - this would change the computed namespace name
+			Config.NamespaceSuffix = "-different-suffix"
+
+			// If the operator recomputes the namespace name, it would use this name, which doesn't exist
+			wrongNsName := fmt.Sprintf("%s%s", "test-ns-suffix-rereconcile", Config.NamespaceSuffix)
+			wrongNsLookupKey := types.NamespacedName{Name: wrongNsName}
+
+			// Verify the wrong namespace doesn't exist before the re-reconcile
+			wrongNs := &corev1.Namespace{}
+			err := k8sClient.Get(ctx, wrongNsLookupKey, wrongNs)
+			Expect(errors.IsNotFound(err)).To(BeTrue(), "The wrong namespace shouldn't exist")
+
+			// Trigger a re-reconcile of the SAME environment by touching its annotations
+			Expect(k8sClient.Get(ctx, envLookupKey, createdEnv)).Should(Succeed())
+			if createdEnv.Annotations == nil {
+				createdEnv.Annotations = map[string]string{}
+			}
+			createdEnv.Annotations["test-rereconcile"] = "trigger"
+			Expect(k8sClient.Update(ctx, createdEnv)).Should(Succeed())
+
+			// Allow the re-reconcile to run and settle back to Ready
+			Eventually(func() quixiov1.EnvironmentPhase {
+				updatedEnv := &quixiov1.Environment{}
+				if err := k8sClient.Get(ctx, envLookupKey, updatedEnv); err != nil {
+					return ""
+				}
+				return updatedEnv.Status.Phase
+			}, timeout, interval).Should(Equal(quixiov1.EnvironmentPhaseReady))
+
+			// (a) The persisted namespace name must be UNCHANGED (still the original)
+			Consistently(func() string {
+				updatedEnv := &quixiov1.Environment{}
+				if err := k8sClient.Get(ctx, envLookupKey, updatedEnv); err != nil {
+					return ""
+				}
+				if updatedEnv.Status.NamespaceStatus == nil {
+					return ""
+				}
+				return updatedEnv.Status.NamespaceStatus.ResourceName
+			}, "2s", interval).Should(Equal(originalNsName), "Stored namespace name should not change on re-reconcile")
+
+			// (b) NO namespace with the new-suffix name must have been created
+			err = k8sClient.Get(ctx, wrongNsLookupKey, wrongNs)
+			Expect(errors.IsNotFound(err)).To(BeTrue(), "A namespace with the new-suffix name must not be created")
+
+			// The original namespace must still exist
+			Expect(k8sClient.Get(ctx, nsLookupKey, createdNs)).Should(Succeed(), "Original namespace should still exist")
+
+			// Clean up
+			Expect(k8sClient.Delete(ctx, createdEnv)).Should(Succeed())
+			Eventually(func() bool {
+				nsGetErr := k8sClient.Get(ctx, nsLookupKey, createdNs)
+				return IsNamespaceDeleted(createdNs, nsGetErr)
+			}, deletionTimeout, interval).Should(BeTrue(), "Original namespace should be deleted during cleanup")
 		})
 
 		It("Should use the stored role binding name during deletion", func() {
@@ -1671,6 +1989,113 @@ var _ = Describe("Environment controller Failed state handling", func() {
 				nsGetErr := k8sClient.Get(ctx, nsLookupKey, createdNs)
 				return IsNamespaceDeleted(createdNs, nsGetErr)
 			}, timeout, interval).Should(BeTrue(), "Namespace was not deleted")
+		})
+	})
+
+	Context("When a fresh Environment has no finalizer", func() {
+		const testNamespace = "default"
+		const deletionTimeout = time.Second * 10
+
+		It("Should add the finalizer first and run the deletion handler so resources are cleaned up", func() {
+			ctx := context.Background()
+
+			// Create a fresh Environment with no finalizer.
+			id := "test-finalizer-first"
+			env := createIntegrationTestEnvironment(id, nil, nil)
+			Expect(env.Finalizers).To(BeEmpty(), "newly built Environment should have no finalizer")
+			Expect(k8sClient.Create(ctx, env)).Should(Succeed())
+
+			envLookupKey := types.NamespacedName{Name: env.Name, Namespace: testNamespace}
+
+			// After the first reconcile passes, the finalizer must be present. This guarantees
+			// the deletion handler runs and the object is never GC'd without cleanup.
+			Eventually(func() bool {
+				fetched := &quixiov1.Environment{}
+				if err := k8sClient.Get(ctx, envLookupKey, fetched); err != nil {
+					return false
+				}
+				for _, f := range fetched.Finalizers {
+					if f == qctrl.EnvironmentFinalizer {
+						return true
+					}
+				}
+				return false
+			}, timeout, interval).Should(BeTrue(), "Finalizer was not added to the Environment")
+
+			// Managed resources are created end to end.
+			nsName := fmt.Sprintf("%s%s", id, Config.NamespaceSuffix)
+			nsLookupKey := types.NamespacedName{Name: nsName}
+			createdNs := &corev1.Namespace{}
+			Eventually(func() bool {
+				return k8sClient.Get(ctx, nsLookupKey, createdNs) == nil
+			}, timeout, interval).Should(BeTrue(), "Namespace was not created")
+
+			roleBindingName := fmt.Sprintf("%s-quix-crb", id)
+			rbLookupKey := types.NamespacedName{Name: roleBindingName, Namespace: nsName}
+			rb := &rbacv1.RoleBinding{}
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, rbLookupKey, rb)
+				return IsRoleBindingValid(rb, err, Config.ClusterRoleName,
+					Config.ServiceAccountName, Config.ServiceAccountNamespace)
+			}, timeout, interval).Should(BeTrue(), "RoleBinding was not created")
+
+			Eventually(func() quixiov1.EnvironmentPhase {
+				fetched := &quixiov1.Environment{}
+				if err := k8sClient.Get(ctx, envLookupKey, fetched); err != nil {
+					return ""
+				}
+				return fetched.Status.Phase
+			}, timeout, interval).Should(Equal(quixiov1.EnvironmentPhaseReady))
+
+			// Delete the Environment and confirm the deletion handler cleans up the
+			// namespace and role binding before the finalizer is removed.
+			Expect(k8sClient.Delete(ctx, env)).Should(Succeed())
+
+			// The finalizer must still be present immediately after the delete request:
+			// deletion is blocked on cleanup, so the object is not GC'd yet. This pins the
+			// orphan-prevention guarantee — without the ordering fix the object could be
+			// removed without the deletion handler ever running.
+			afterDelete := &quixiov1.Environment{}
+			Expect(k8sClient.Get(ctx, envLookupKey, afterDelete)).Should(Succeed())
+			Expect(afterDelete.Finalizers).To(ContainElement(qctrl.EnvironmentFinalizer),
+				"Finalizer must still be present right after delete (deletion blocked on cleanup)")
+
+			// The deletion handler must clean up the RoleBinding, not just the namespace.
+			Eventually(func() bool {
+				rbGetErr := k8sClient.Get(ctx, rbLookupKey, rb)
+				return errors.IsNotFound(rbGetErr)
+			}, deletionTimeout, interval).Should(BeTrue(), "RoleBinding was not cleaned up by the deletion handler")
+
+			Eventually(func() bool {
+				nsGetErr := k8sClient.Get(ctx, nsLookupKey, createdNs)
+				return IsNamespaceDeleted(createdNs, nsGetErr)
+			}, deletionTimeout, interval).Should(BeTrue(), "Namespace deletion was not initiated by the deletion handler")
+
+			// envtest has no namespace controller, so a deleted namespace lingers with a
+			// DeletionTimestamp instead of disappearing. Finalize its removal to mimic a real
+			// cluster reaping the namespace, so the deletion handler can observe it gone and
+			// proceed to RemoveFinalizer.
+			finalizeNamespaceDeletion(ctx, nsName)
+
+			// The finalizer must be EVENTUALLY removed, proving the deletion handler ran to
+			// completion (rather than the object being GC'd without cleanup). Once the
+			// finalizer is gone the Environment is fully reaped.
+			Eventually(func() bool {
+				fetched := &quixiov1.Environment{}
+				err := k8sClient.Get(ctx, envLookupKey, fetched)
+				if errors.IsNotFound(err) {
+					return true
+				}
+				if err != nil {
+					return false
+				}
+				for _, f := range fetched.Finalizers {
+					if f == qctrl.EnvironmentFinalizer {
+						return false
+					}
+				}
+				return true
+			}, deletionTimeout, interval).Should(BeTrue(), "Finalizer was not removed by the deletion handler")
 		})
 	})
 })
