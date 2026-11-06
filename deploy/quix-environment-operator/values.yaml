@@ -6,7 +6,7 @@ replicaCount: 1
 image:
   repository: quixanalytics/quix-environment-operator
   pullPolicy: IfNotPresent
-  tag: "latest"
+  tag: ""
 
 imagePullSecrets: []
 nameOverride: ""

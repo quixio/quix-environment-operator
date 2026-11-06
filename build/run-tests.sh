@@ -1,25 +1,20 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-set -e
-
-# Generate go.sum if it doesn't exist
-echo "Checking if go.sum exists and generating if needed..."
-if [ ! -f "go.sum" ]; then
-  echo "go.sum doesn't exist, generating..."
-  go mod tidy
+# The admitted builder may use docker-container, whose cache is not a runnable image.
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+builder=()
+if [[ -n "${BUILDX_BUILDER:-}" ]]; then
+  builder=(--builder "$BUILDX_BUILDER")
 fi
-# Build the test Docker image
-echo "Building test Docker image..."
-docker build -t quix-environment-operator-test -f build/dockerfile.test . --progress=plain
+docker buildx build "${builder[@]}" --platform linux/amd64 --load \
+  --iidfile "$work/image-id" -f build/dockerfile.test . --progress=plain
+image=$(cat "$work/image-id")
+[[ "$image" =~ ^sha256:[0-9a-f]{64}$ ]]
 
-echo ""
-echo "=== Running tests ==="
-echo ""
+mkdir -p "$(pwd)/coverlet"
+docker run --rm --platform linux/amd64 \
+  -v "$(pwd)/coverlet":/app/coverlet "$image"
 
-mkdir -p $(pwd)/coverlet
-docker run --rm \
-  -v "$(pwd)/coverlet":/app/coverlet \
-  quix-environment-operator-test
-
-echo ""
-echo "✅ All tests completed successfully"
+echo "All tests completed successfully"

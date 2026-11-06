@@ -1,12 +1,12 @@
-FROM golang:1.25.0-alpine
+# Debian includes the sanitizer tools, so trust is filtered before any download.
+FROM golang:1.25.0@sha256:5502b0e56fca23feba76dbc5387ba59c593c02ccc2f0f7355871ea9a0852cebe
+COPY trust/remove-rejected-cas.sh trust/rejected-roots.sha256 /trust/
+RUN --network=none sh /trust/remove-rejected-cas.sh --policy /trust/rejected-roots.sha256
 
-# Install tools
-RUN apk add --no-cache curl bash git build-base tar
-
-# Set working dir 
+# Set working dir
 WORKDIR /app
 
-COPY go.mod ./
+COPY go.mod go.sum ./
 COPY hack/ ./hack/
 COPY Makefile ./
 
@@ -30,4 +30,4 @@ RUN make build
 
 # Run tests with specific flags to ensure freshly built code
 ENTRYPOINT ["/bin/sh", "-c"]
-CMD ["make test"] 
+CMD ["make test"]

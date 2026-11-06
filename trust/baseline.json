@@ -1,0 +1,42 @@
+{
+  "bundle_sha256": "714d457d580922dbf1d0be8bd35ba236a842b50b0072ae791582a19adef772a5",
+  "binary_sha256": "c7eb891a8221e6b352edf16aba5dda33e6e04bb8be88c76092cb89deea546ec3",
+  "certificates": 150,
+  "denied_present": [
+    "d7a7a0fb5d7e2731d771e9484ebcdef71d5f0c3e0a2948782bc83ee0ea699ef4",
+    "86a1ecba089c4a8d3bbe2734c612ba341d813e043cf9e8a862cd5c57a36bbe6b"
+  ],
+  "chart": {
+    "reference": "quixcontainerregistry.azurecr.io/helm/quix-environment-operator:0.1.6",
+    "manifest_digest": "sha256:5898eca5127c9018e6e5c33af43cbd33afca98070a5e112b0da6ac5dfe0353c2",
+    "archive_sha256": "be9eff2cbfd46d484e30076c1a20db28e3ea05f3b88424b5069c7b72099fab12",
+    "default_image": "quixanalytics/quix-environment-operator:0.1.6"
+  },
+  "image": {
+    "reference": "quixanalytics/quix-environment-operator:0.1.6",
+    "digest": "sha256:bada63e9fd09fa79b58a2b36601a5598128b4fbdbe5ccc6b5a432115855a3608",
+    "platform": "linux/amd64",
+    "source_revision": null,
+    "attestations": [],
+    "labels": {},
+    "user": "nonroot:nonroot",
+    "entrypoint": [
+      "/bin/operator"
+    ],
+    "working_directory": "/bin",
+    "binary_path": "usr/bin/operator"
+  },
+  "source_test_base": "e2781a75fcd28a0c07a24dfd66e186cc92bd982a",
+  "customer_override_candidate": {
+    "reference": "quixanalytics/quix-environment-operator:0.1.0",
+    "digest": "sha256:7dac80e6c8960eb2a27ed00851ad528cb44d0db7f908570bcb014def426313c2",
+    "qualified_by_this_release": false
+  },
+  "buildkit": {
+    "image": "quixcontainerregistry.azurecr.io/buildkit@sha256:3a25e430255677ba5cd021511008cc4b66bc588dc03cd48071c6d447e5b2960a",
+    "config": "sha256:028b91caccb311c2da992f286cb3cdb70350bb69d00b7471832e8769d6f4f618",
+    "qualification_run": 83634,
+    "admission": "SCOPED_TRUST_ADMITTED",
+    "limitation": "Independent host-network original DER matches; BuildKit same-session peer chain and resolved address unavailable."
+  }
+}
