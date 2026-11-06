@@ -46,3 +46,6 @@ testbin/
 /config/crd/bases/
 /deploy/quix-environment-operator/templates/crds.yaml
 zz_generated.*.go
+
+/.evidence/
+/trust/__pycache__/

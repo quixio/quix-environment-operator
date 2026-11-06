@@ -149,11 +149,11 @@ build: generate-crds generate fmt vet helm-copy-crds ## Build manager binary.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.
-	docker build -t ${IMG} . -f build/dockerfile
+	python3 trust/source_image.py build "${IMG}"
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
-	docker push ${IMG}
+	python3 trust/source_image.py push "${IMG}"
 
 ##@ Deployment
 
@@ -249,4 +249,16 @@ tidy: fmt ## Run go mod tidy and clean up imports.
 	@echo "Cleaning up imports in Go files..."
 	@find . -type f -name "*.go" -not -path "./vendor/*" | xargs $(LOCALBIN)/goimports -w
 	@echo "Running go mod tidy..."
-	go mod tidy 
+	go mod tidy
+
+.PHONY: hotfix2-check hotfix2-validate hotfix2-publish
+hotfix2-check: ## Check release guards without container builds or publication.
+	python3 -m unittest discover -s trust -p '*_test.py'
+	go test ./trust/probe
+	helm lint deploy/quix-environment-operator
+
+hotfix2-validate: hotfix2-check ## Build and qualify the pinned amd64 trust overlay; never publish.
+	python3 trust/release.py validate
+
+hotfix2-publish: ## Publish the exact qualified artifacts with explicit PUBLISH=true.
+	python3 trust/release.py publish
