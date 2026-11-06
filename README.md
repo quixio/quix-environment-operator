@@ -127,3 +127,15 @@ The source tests use disposable envtest, never a live cluster. Receipts and logs
 are retained in `operator-qualification`; missing tests, TLS, scan or digest evidence
 must be resolved before release. `make hotfix2-publish` additionally requires
 `PUBLISH=true` and the same clean source revision and qualified artifact hashes.
+
+Ordinary source builds and source-test containers use digest-pinned Go 1.24.2
+Debian inputs with the reviewed trust filter applied offline before tool or module
+downloads. The test image is loaded from the selected buildx builder and executed
+by its fresh image ID. The Debian test base provides the sanitation and build
+tools without a package-install bootstrap using unfiltered trust.
+
+`make docker-build` filters the pinned distroless runtime bundle, exports the
+built image by ID, and checks its actual final trust stores before assigning
+`IMG`. `make docker-push` repeats that final-store check before publication.
+These source-store checks require Python 3 and do not replace the complete
+retained-image TLS, scanner and functional qualification gates above.

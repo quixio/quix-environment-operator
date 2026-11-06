@@ -1,5 +1,15 @@
 # Build stage
-FROM golang:1.24.2 AS builder
+FROM gcr.io/distroless/static:nonroot@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329 AS runtime-base
+
+FROM golang:1.24.2@sha256:30baaea08c5d1e858329c50f29fe381e9b7d7bced11a0f5f1f69a1504cdfbf5e AS trusted-tools
+COPY trust/remove-rejected-cas.sh trust/rejected-roots.sha256 /trust/
+RUN --network=none sh /trust/remove-rejected-cas.sh --policy /trust/rejected-roots.sha256
+
+FROM trusted-tools AS runtime-trust
+COPY --from=runtime-base /etc/ssl/certs/ca-certificates.crt /runtime/ca-certificates.crt
+RUN --network=none sh /trust/remove-rejected-cas.sh --policy /trust/rejected-roots.sha256 --bundle /runtime/ca-certificates.crt --scan-root /runtime
+
+FROM trusted-tools AS builder
 
 WORKDIR /workspace
 
@@ -26,9 +36,10 @@ RUN go mod download
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 make build
 
 # Runtime stage (minimal container)
-FROM gcr.io/distroless/static:nonroot
+FROM runtime-base
+COPY --from=runtime-trust /runtime/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 WORKDIR /bin
 COPY --from=builder /workspace/bin/operator .
 USER nonroot:nonroot
 
-ENTRYPOINT ["/bin/operator"] 
+ENTRYPOINT ["/bin/operator"]

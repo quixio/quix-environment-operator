@@ -149,11 +149,11 @@ build: generate-crds generate fmt vet helm-copy-crds ## Build manager binary.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.
-	docker build -t ${IMG} . -f build/dockerfile
+	python3 trust/source_image.py build "${IMG}"
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
-	docker push ${IMG}
+	python3 trust/source_image.py push "${IMG}"
 
 ##@ Deployment
 
