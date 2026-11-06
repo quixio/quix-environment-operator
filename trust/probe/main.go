@@ -43,6 +43,26 @@ func certs(b []byte) []*x509.Certificate {
 	}
 	return out
 }
+func checkRoots(bundle []byte, denied map[string]bool) int {
+	approved := false
+	count := 0
+	for _, c := range certs(bundle) {
+		sum := sha256.Sum256(c.Raw)
+		fp := hex.EncodeToString(sum[:])
+		if denied[fp] {
+			panic("denied root: " + fp)
+		}
+		if fp == "96bcec06264976f37460779acf28c5a7cfe8a3c0aae11a8ffcee05c0bddf08c6" {
+			approved = true
+		}
+		count++
+	}
+	if !approved || count < 1 {
+		panic("approved ISRG Root X1 absent")
+	}
+	return count
+}
+
 func main() {
 	bundle := read("/etc/ssl/certs/ca-certificates.crt")
 	denied := map[string]bool{}
@@ -54,22 +74,7 @@ func main() {
 	if len(denied) != 3 {
 		panic("invalid denylist")
 	}
-	approved := false
-	count := 0
-	for _, c := range certs(bundle) {
-		sum := sha256.Sum256(c.Raw)
-		fp := hex.EncodeToString(sum[:])
-		if denied[fp] {
-			panic("denied root: " + fp)
-		}
-		if fp == "96bcec06264976f37460779acf28c5a7cfe8a3c0aae11a8ffcee05c0bdddf08c6" {
-			approved = true
-		}
-		count++
-	}
-	if !approved || count < 1 {
-		panic("approved ISRG Root X1 absent")
-	}
+	count := checkRoots(bundle, denied)
 	pool, e := x509.SystemCertPool()
 	must(e)
 	var manifest struct {
