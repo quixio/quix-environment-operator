@@ -2,7 +2,7 @@
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
 import subprocess
@@ -189,7 +189,22 @@ def chart(out):
         shutil.rmtree(stage)
     stage.mkdir()
     with tarfile.open(archive) as t:
-        t.extractall(stage, filter='data')
+        members = t.getmembers()
+        # Helm packages contain only regular files and directories. Validate all
+        # entries before writing; extraction filters are unavailable on workers.
+        for member in members:
+            path = PurePosixPath(member.name)
+            if (path.is_absolute() or '..' in path.parts or not path.parts
+                    or not (member.isfile() or member.isdir())):
+                raise ValueError('unsafe chart member: ' + member.name)
+        for member in members:
+            target = stage / member.name
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with t.extractfile(member) as source, target.open('wb') as destination:
+                    shutil.copyfileobj(source, destination)
     chartdir = stage / 'quix-environment-operator'
     values = chartdir / 'values.yaml'
     values.write_text(values.read_text().replace('repository: quixanalytics/quix-environment-operator', 'repository: quixcontainerregistry.azurecr.io/quix-environment-operator').replace('tag: "0.1.6"', 'tag: ""'))
