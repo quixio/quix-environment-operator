@@ -1,4 +1,5 @@
 """Local OCI qualification and immutable publication; no registry writes in validate."""
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -8,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE = 'quixanalytics/quix-environment-operator@sha256:bada63e9fd09fa79b58a2b36601a5598128b4fbdbe5ccc6b5a432115855a3608'
@@ -259,6 +261,86 @@ def verify_candidate(out):
     return receipt
 
 
+# Match the actual candidate verifier; the original store is a success control.
+PROBE_GO = 'go1.24.2'
+PROBE_MATERIALS = {
+    'linux/amd64': 'e02960c4d165acfa85817fbdd4eccee35cdd28f6bda666c7f8e495fb9549944f',
+    'darwin/arm64': 'a56b188380f4c334ad763962a329d21a2bee98ae3146ffc832b64f0e201edda5',
+}
+
+
+@contextmanager
+def probe_compiler(out):
+    # Fresh cache: authenticate the archive, never execute an ambient cached toolchain.
+    with tempfile.TemporaryDirectory(prefix='operator-probe-') as tmp:
+        env = dict(os.environ, GOENV='off', GOTOOLCHAIN='local', GOWORK='off', GOFLAGS='',
+                   GOPROXY='https://proxy.golang.org', GOSUMDB='sum.golang.org',
+                   GOPRIVATE='', GONOPROXY='', GONOSUMDB='', GOINSECURE='',
+                   GOMODCACHE=tmp + '/modules')
+        for key in ('GOROOT', 'GOEXPERIMENT', 'GODEBUG', 'GOAMD64', 'GOARM64'):
+            env.pop(key, None)
+        host = json.loads(run('go', 'env', '-json', 'GOHOSTOS', 'GOHOSTARCH', cwd=tmp, env=env))
+        platform = host['GOHOSTOS'] + '/' + host['GOHOSTARCH']
+        if platform not in PROBE_MATERIALS:
+            raise ValueError('unreviewed probe compiler host: ' + platform)
+        version = 'v0.0.1-' + PROBE_GO + '.' + platform.replace('/', '-')
+        material = json.loads(run('go', 'mod', 'download', '-json', 'golang.org/toolchain@' + version, cwd=tmp, env=env))
+        if (material.get('Path') != 'golang.org/toolchain' or material.get('Version') != version
+                or digest(material['Zip']) != PROBE_MATERIALS[platform]):
+            raise ValueError('probe compiler material identity mismatch')
+        toolchain = Path(material['Dir'])
+        # Module archives omit executable bits; only authenticated tool files are enabled.
+        for directory in (toolchain / 'bin', toolchain / 'pkg/tool' / platform.replace('/', '_')):
+            for binary in directory.iterdir():
+                if binary.is_file():
+                    binary.chmod(binary.stat().st_mode | 0o111)
+        compiler = str(toolchain / 'bin/go')
+        identity = run(compiler, 'version', cwd=tmp, env=env)
+        if identity != 'go version ' + PROBE_GO + ' ' + platform:
+            raise ValueError('probe compiler version mismatch: ' + identity)
+        metadata = run(compiler, 'version', '-m', compiler, cwd=tmp, env=env)
+        save(out / 'probe-compiler.json', {'purpose': 'candidate verifier with original-store success and final-store denial controls',
+             'module': material['Path'], 'version': version, 'sum': material['Sum'],
+             'archive_sha256': digest(material['Zip']), 'compiler_sha256': digest(compiler),
+             'identity': identity, 'build_metadata': metadata})
+        yield compiler, env
+
+
+def go_metadata(binary, arch, expected_version, expected_path):
+    metadata = run('go', 'version', '-m', str(binary), env=dict(os.environ, GOTOOLCHAIN='local'))
+    lines = metadata.splitlines()
+    settings = dict(re.findall(r'^\s*build\s+(\w+)=(.*)$', metadata, re.M))
+    if (not lines or lines[0].rsplit(': ', 1)[-1] != expected_version
+            or not re.search(r'^\s*path\s+' + re.escape(expected_path) + r'$', metadata, re.M)
+            or any(settings.get(key) != value for key, value in
+                   {'GOOS': 'linux', 'GOARCH': arch, 'CGO_ENABLED': '0'}.items())):
+        raise ValueError('Go build metadata mismatch: ' + str(binary))
+    return metadata
+
+
+def build_probe(folder, arch, compiler, compiler_env):
+    consumer = folder / 'consumer'
+    executable = BINARY
+    with tarfile.open(folder / 'rootfs.tar') as archive:
+        matches = [m for m in archive.getmembers() if m.name.removeprefix('./') == executable and m.isfile()]
+        if len(matches) != 1:
+            raise ValueError('expected one candidate executable: ' + executable)
+        with archive.extractfile(matches[0]) as src, consumer.open('wb') as dst:
+            shutil.copyfileobj(src, dst)
+    consumer_metadata = go_metadata(consumer, arch, PROBE_GO, 'command-line-arguments')
+    with tempfile.TemporaryDirectory(prefix='operator-probe-source-') as tmp:
+        stage = Path(tmp)
+        (stage / 'go.mod').write_text('module historicalprobe\n\ngo 1.24.0\n')
+        shutil.copy2(ROOT / 'trust/probe/main.go', stage / 'main.go')
+        env = dict(compiler_env, GOOS='linux', GOARCH=arch, CGO_ENABLED='0', GOPROXY='off', GOSUMDB='off')
+        run(compiler, 'build', '-p', '2', '-mod=readonly', '-trimpath', '-buildvcs=false', '-o', str(folder / 'probe'), '.', cwd=stage, env=env)
+    probe_metadata = go_metadata(folder / 'probe', arch, PROBE_GO, 'historicalprobe')
+    save(folder / 'probe-evidence.json', {'compiler_receipt_sha256': digest(folder.parent / 'probe-compiler.json'),
+         'control': 'original-store success under selected candidate verifier; final-store unknown-authority denial',
+         'consumer_path': executable, 'consumer_sha256': digest(consumer), 'consumer_build_metadata': consumer_metadata,
+         'probe_sha256': digest(folder / 'probe'), 'probe_build_metadata': probe_metadata})
+
+
 def qualify(out):
     (out / 'qualified.json').unlink(missing_ok=True)
     receipt = verify_candidate(out)
@@ -272,58 +354,59 @@ def qualify(out):
     # Remove previous success before any operation that may fail.
     (out / 'qualified.json').unlink(missing_ok=True)
     results = {}
-    for arch in ('amd64',):
-        folder = out / arch
-        folder.mkdir(exist_ok=True)
-        shutil.copy2(ROOT / 'trust/rejected-roots.sha256', folder)
-        shutil.copy2(baseline, folder / 'original-ca-certificates.crt')
-        env = dict(os.environ, GOOS='linux', GOARCH=arch, CGO_ENABLED='0')
-        run('go', 'build', '-o', str(folder / 'probe'), './trust/probe', cwd=ROOT, env=env)
-        local = 'operator-qualified-' + arch
-        number = receipt['oci_sha256'][:32]
-        image = local + ':' + number
-        archive = folder / 'image.tar'
-        run('skopeo', '--override-os', 'linux', '--override-arch', arch, 'copy', 'oci-archive:' + str(out / 'candidate.oci.tar'), 'docker-archive:' + str(archive) + ':' + image)
-        run('docker', 'load', '--input', str(archive))
-        image_id = run('docker', 'image', 'inspect', '--format', '{{.Id}}', image)
-        original_config = json.loads((out / 'original-config.json').read_text())['config']
-        final_config = json.loads(run('docker', 'image', 'inspect', image_id))[0]['Config']
-        for key in ('User', 'Env', 'Entrypoint', 'WorkingDir', 'Cmd'):
-            if original_config.get(key) != final_config.get(key):
-                raise ValueError('runtime configuration changed: ' + key)
-        # Compare image layers with the same exporter as the baseline. Docker
-        # container export injects runtime mount points absent from the image.
-        with archive.open('rb') as stream:
-            run('crane', 'export', '-', str(folder / 'rootfs.tar'), stdin=stream)
-        original = inventory(out / 'original-rootfs.tar')
-        final = inventory(folder / 'rootfs.tar')
-        if original.pop(BUNDLE)[-1] != ORIGINAL_BUNDLE_SHA256:
-            raise ValueError('baseline rootfs mismatch')
-        final.pop(BUNDLE)
-        if final != original or final[BINARY][-1] != BINARY_SHA256:
-            raise ValueError('overlay changed files beyond trust bundle')
-        with tarfile.open(folder / 'rootfs.tar') as t:
-            bundle = t.extractfile(BUNDLE).read()
-        if bundle != filtered(baseline.read_bytes()):
-            raise ValueError('candidate trust bundle differs from reviewed filter')
-        log = run('docker', 'run', '--rm', '--platform', 'linux/' + arch, '--read-only', '--tmpfs', '/tmp:rw,noexec,nosuid',
-                  '-v', str(folder) + ':/qualification:ro', '-v', str(fixtures) + ':/fixtures:ro',
-                  '--entrypoint', '/qualification/probe', image_id)
-        (folder / 'tls.log').write_text(log + '\n')
-        env = dict(os.environ, SCAN_REPOSITORY=local, SCAN_BUILD_NUMBER=number)
-        run('python3', str(buildsteps / 'docker/scan_materials.py'), cwd=folder, env=env)
-        scan = json.loads((folder / ('trivy-materials-' + local + '.' + number + '.json')).read_text())
-        report = json.loads((folder / ('trivy-report-' + local + '.json')).read_text())
-        if scan['status'] != 'PASS' or scan['image'] != image or run('docker', 'image', 'inspect', '--format', '{{.Id}}', image) != image_id:
-            raise ValueError('scan evidence/image mismatch')
-        findings = [v for result in report.get('Results', []) for v in result.get('Vulnerabilities', [])]
-        counts = {s: sum(v['Severity'] == s for v in findings) for s in ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL')}
-        if any(counts[s] for s in ('MEDIUM', 'HIGH', 'CRITICAL')):
-            print('##vso[task.logissue type=warning]Operator ' + arch + ' vulnerabilities: ' + json.dumps(counts))
-        results[arch] = {'image_id': image_id, 'rootfs_sha256': digest(folder / 'rootfs.tar'), 'tls_sha256': digest(folder / 'tls.log'), 'vulnerabilities': counts, 'scanner_revision': SCAN_REVISION, 'scan_materials_sha256': digest(folder / ('trivy-materials-' + local + '.' + number + '.json')), 'scan_report_sha256': digest(folder / ('trivy-report-' + local + '.json'))}
+    with probe_compiler(out) as (compiler, compiler_env):
+        for arch in ('amd64',):
+            folder = out / arch
+            folder.mkdir(exist_ok=True)
+            shutil.copy2(ROOT / 'trust/rejected-roots.sha256', folder)
+            shutil.copy2(baseline, folder / 'original-ca-certificates.crt')
+            local = 'operator-qualified-' + arch
+            number = receipt['oci_sha256'][:32]
+            image = local + ':' + number
+            archive = folder / 'image.tar'
+            run('skopeo', '--override-os', 'linux', '--override-arch', arch, 'copy', 'oci-archive:' + str(out / 'candidate.oci.tar'), 'docker-archive:' + str(archive) + ':' + image)
+            run('docker', 'load', '--input', str(archive))
+            image_id = run('docker', 'image', 'inspect', '--format', '{{.Id}}', image)
+            original_config = json.loads((out / 'original-config.json').read_text())['config']
+            final_config = json.loads(run('docker', 'image', 'inspect', image_id))[0]['Config']
+            for key in ('User', 'Env', 'Entrypoint', 'WorkingDir', 'Cmd'):
+                if original_config.get(key) != final_config.get(key):
+                    raise ValueError('runtime configuration changed: ' + key)
+            # Compare image layers with the same exporter as the baseline. Docker
+            # container export injects runtime mount points absent from the image.
+            with archive.open('rb') as stream:
+                run('crane', 'export', '-', str(folder / 'rootfs.tar'), stdin=stream)
+            original = inventory(out / 'original-rootfs.tar')
+            final = inventory(folder / 'rootfs.tar')
+            if original.pop(BUNDLE)[-1] != ORIGINAL_BUNDLE_SHA256:
+                raise ValueError('baseline rootfs mismatch')
+            final.pop(BUNDLE)
+            if final != original or final[BINARY][-1] != BINARY_SHA256:
+                raise ValueError('overlay changed files beyond trust bundle')
+            with tarfile.open(folder / 'rootfs.tar') as t:
+                bundle = t.extractfile(BUNDLE).read()
+            if bundle != filtered(baseline.read_bytes()):
+                raise ValueError('candidate trust bundle differs from reviewed filter')
+            build_probe(folder, arch, compiler, compiler_env)
+            log = run('docker', 'run', '--rm', '--platform', 'linux/' + arch, '--read-only', '--tmpfs', '/tmp:rw,noexec,nosuid',
+                      '-v', str(folder) + ':/qualification:ro', '-v', str(fixtures) + ':/fixtures:ro',
+                      '--entrypoint', '/qualification/probe', image_id)
+            (folder / 'tls.log').write_text(log + '\n')
+            env = dict(os.environ, SCAN_REPOSITORY=local, SCAN_BUILD_NUMBER=number)
+            run('python3', str(buildsteps / 'docker/scan_materials.py'), cwd=folder, env=env)
+            scan = json.loads((folder / ('trivy-materials-' + local + '.' + number + '.json')).read_text())
+            report = json.loads((folder / ('trivy-report-' + local + '.json')).read_text())
+            if scan['status'] != 'PASS' or scan['image'] != image or run('docker', 'image', 'inspect', '--format', '{{.Id}}', image) != image_id:
+                raise ValueError('scan evidence/image mismatch')
+            findings = [v for result in report.get('Results', []) for v in result.get('Vulnerabilities', [])]
+            counts = {s: sum(v['Severity'] == s for v in findings) for s in ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL')}
+            if any(counts[s] for s in ('MEDIUM', 'HIGH', 'CRITICAL')):
+                print('##vso[task.logissue type=warning]Operator ' + arch + ' vulnerabilities: ' + json.dumps(counts))
+            results[arch] = {'probe_evidence_sha256': digest(folder / 'probe-evidence.json'), 'image_id': image_id, 'rootfs_sha256': digest(folder / 'rootfs.tar'), 'tls_sha256': digest(folder / 'tls.log'), 'vulnerabilities': counts, 'scanner_revision': SCAN_REVISION, 'scan_materials_sha256': digest(folder / ('trivy-materials-' + local + '.' + number + '.json')), 'scan_report_sha256': digest(folder / ('trivy-report-' + local + '.json'))}
     tests = run('make', 'docker-test-unit', 'docker-test-integration', cwd=ROOT)
     (out / 'source-tests.log').write_text(tests + '\n')
     receipt['source_tests_sha256'] = digest(out / 'source-tests.log')
+    receipt['probe_compiler_sha256'] = digest(out / 'probe-compiler.json')
     receipt['platforms'] = results
     save(out / 'qualified.json', receipt)
 
@@ -335,6 +418,17 @@ def publish(out):
     qualified = json.loads((out / 'qualified.json').read_text())
     if any(qualified.get(k) != v for k, v in receipt.items()) or set(qualified.get('platforms', {})) != {'amd64'}:
         raise ValueError('the exact candidate architecture must be qualified')
+    if digest(out / 'probe-compiler.json') != qualified['probe_compiler_sha256']:
+        raise ValueError('probe compiler evidence changed')
+    for arch, platform in qualified['platforms'].items():
+        for filename, key in [('probe-evidence.json', 'probe_evidence_sha256'), ('tls.log', 'tls_sha256'), ('rootfs.tar', 'rootfs_sha256')]:
+            if digest(out / arch / filename) != platform[key]:
+                raise ValueError('qualification evidence changed: ' + filename)
+        probe = json.loads((out / arch / 'probe-evidence.json').read_text())
+        if (probe['compiler_receipt_sha256'] != qualified['probe_compiler_sha256']
+                or digest(out / arch / 'probe') != probe['probe_sha256']
+                or digest(out / arch / 'consumer') != probe['consumer_sha256']):
+            raise ValueError('probe/consumer evidence changed')
     if digest(out / 'source-tests.log') != qualified['source_tests_sha256']:
         raise ValueError('source test evidence changed')
     for arch, evidence in qualified['platforms'].items():

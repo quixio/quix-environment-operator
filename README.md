@@ -139,3 +139,5 @@ built image by ID, and checks its actual final trust stores before assigning
 `IMG`. `make docker-push` repeats that final-store check before publication.
 These source-store checks require Python 3 and do not replace the complete
 retained-image TLS, scanner and functional qualification gates above.
+
+Qualification acquires an authenticated, SHA-256-pinned Go 1.24.2 probe compiler in a fresh module cache with automatic toolchain switching disabled. It checks the actual candidate executable’s compiler, Linux architecture and disabled CGO before building the probe, and binds compiler, consumer and probe metadata and hashes to the qualification receipt. Publication rechecks these evidence files. The retained `/usr/bin/operator` mapping is checked on amd64. The standard-library probe builds in a separate minimal module with matching language defaults. Original-store success, final-store unknown-authority denial, actual application TLS checks and scanner gates remain mandatory.
