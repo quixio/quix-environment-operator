@@ -88,6 +88,35 @@ class ReleaseGuards(unittest.TestCase):
                 self.assertEqual(list((Path(self.temp.name) / 'chart').iterdir()), [])
                 self.assertFalse((Path(self.temp.name) / 'escaped').exists())
 
+    def test_inventory_preserves_image_paths_and_metadata(self):
+        out = Path(self.temp.name) / 'rootfs.tar'
+        names = ['dev/console', 'dev/pts', 'dev/shm', 'etc/mtab',
+                 'etc/hosts', 'etc/hostname', 'etc/resolv.conf', '.dockerenv', release.BINARY]
+        with tarfile.open(out, 'w') as archive:
+            for name in names:
+                member = tarfile.TarInfo(name)
+                member.mode, member.uid, member.gid = 0o750, 12, 34
+                member.size = 8
+                archive.addfile(member, io.BytesIO(b'retained'))
+        inventory = release.inventory(out)
+        self.assertEqual(set(inventory), set(names))
+        for value in inventory.values():
+            self.assertEqual(value, ('0', 0o750, 12, 34, '',
+                                    release.hashlib.sha256(b'retained').hexdigest()))
+
+    def test_crane_archive_export_forwards_stdin_to_tool_container(self):
+        archive = Path(self.temp.name) / 'image.tar'
+        archive.write_bytes(b'image archive')
+        with archive.open('rb') as stream, patch.object(subprocess, 'check_output', return_value='') as execute:
+            release.run('crane', 'export', '-', '/evidence/rootfs.tar', stdin=stream)
+            args, kwargs = execute.call_args
+            self.assertIn('--interactive', args[0][:args[0].index(release.TOOLS['crane'])])
+            self.assertEqual(args[0][-3:], ['export', '-', '/evidence/rootfs.tar'])
+            self.assertIs(kwargs['stdin'], stream)
+        with patch.object(subprocess, 'check_output', return_value='') as execute:
+            release.run('crane', 'version')
+            self.assertNotIn('--interactive', execute.call_args.args[0])
+
     def test_unknown_registry_failure_is_not_absence(self):
         for error in ('UNAUTHORIZED', 'connection timeout', 'MANIFEST_UNKNOWN: DENIED', 'unknown'):
             with patch.object(subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, '', error)):

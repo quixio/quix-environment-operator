@@ -24,11 +24,11 @@ TOOLS = {
 }
 
 
-def tool_args(name, *args):
+def tool_args(name, *args, interactive=False):
     out = Path(os.environ['EVIDENCE_DIR']).resolve()
     empty = out / 'empty-ca'; empty.mkdir(exist_ok=True)
     auth = Path(os.environ.get('DOCKER_CONFIG', str(Path.home() / '.docker'))).resolve()
-    return ['docker', 'run', '--rm', '--platform', 'linux/amd64', '--user', str(os.getuid()) + ':' + str(os.getgid()),
+    return ['docker', 'run', *(['--interactive'] if interactive else []), '--rm', '--platform', 'linux/amd64', '--user', str(os.getuid()) + ':' + str(os.getgid()),
         '-v', str(out) + ':' + str(out), '-v', str(auth) + ':/auth:ro',
         '-v', '/etc/ssl/certs/ca-certificates.crt:/qualification-ca.pem:ro',
         '-v', str(empty) + ':/empty-ca:ro', '-e', 'SSL_CERT_FILE=/qualification-ca.pem', '-e', 'SSL_CERT_DIR=/empty-ca',
@@ -38,7 +38,7 @@ def tool_args(name, *args):
 
 def run(*args, **kwargs):
     if args[0] in TOOLS:
-        args = tool_args(*args)
+        args = tool_args(*args, interactive=kwargs.get('stdin') is not None)
     try:
         return subprocess.check_output(args, text=True, **kwargs).strip()
     except subprocess.CalledProcessError as error:
@@ -171,7 +171,7 @@ def inventory(archive):
     with tarfile.open(archive) as t:
         for m in t.getmembers():
             name = m.name.removeprefix('./').rstrip('/')
-            if not name or name in {'.', 'etc/hosts', 'etc/hostname', 'etc/resolv.conf', '.dockerenv'}:
+            if not name or name == '.':
                 continue
             result[name] = (m.type.decode(), m.mode, m.uid, m.gid, m.linkname,
                             hashlib.sha256(t.extractfile(m).read()).hexdigest() if m.isfile() else '')
@@ -291,11 +291,10 @@ def qualify(out):
         for key in ('User', 'Env', 'Entrypoint', 'WorkingDir', 'Cmd'):
             if original_config.get(key) != final_config.get(key):
                 raise ValueError('runtime configuration changed: ' + key)
-        container = run('docker', 'create', '--platform', 'linux/' + arch, image_id)
-        try:
-            run('docker', 'export', '--output', str(folder / 'rootfs.tar'), container)
-        finally:
-            run('docker', 'rm', container)
+        # Compare image layers with the same exporter as the baseline. Docker
+        # container export injects runtime mount points absent from the image.
+        with archive.open('rb') as stream:
+            run('crane', 'export', '-', str(folder / 'rootfs.tar'), stdin=stream)
         original = inventory(out / 'original-rootfs.tar')
         final = inventory(folder / 'rootfs.tar')
         if original.pop(BUNDLE)[-1] != ORIGINAL_BUNDLE_SHA256:
