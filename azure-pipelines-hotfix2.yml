@@ -1,0 +1,67 @@
+name: '$(Date:yyyyMMdd).$(Rev:r)'
+trigger: none
+pr: none
+parameters:
+- name: publish
+  type: boolean
+  default: false
+pool:
+  name: SpotScaleSet-dev
+variables:
+  IMAGE_TAG: '$(Build.BuildNumber)-2026-09-spaces-hotfix-2'
+  CHART_VERSION: '0.1.$(Build.BuildId)-2026-09-spaces-hotfix-2'
+  EVIDENCE_DIR: '$(Build.ArtifactStagingDirectory)/operator'
+resources:
+  repositories:
+  - repository: Infrastructure
+    type: git
+    name: Quix/Infrastructure
+    ref: 4ec623f7dc9c7b2e809734ae989e84c77ee57168
+  - repository: BuildSteps
+    type: git
+    name: Quix/BuildSteps
+    ref: 267fba898141dac80a9c94e046ed8ff219dc0f8b
+steps:
+- template: s3cleaner/builds/repair-worker-brotli.yml@Infrastructure
+- template: s3cleaner/builds/preinput-trust.yml@Infrastructure
+  parameters:
+    checkoutSource: false
+- checkout: BuildSteps
+  persistCredentials: false
+  path: s/BuildSteps
+- checkout: self
+  persistCredentials: false
+  clean: true
+  path: s/operator
+- task: Docker@2
+  inputs:
+    command: login
+    containerRegistry: quixcontainerregistry
+- bash: |
+    set -euo pipefail
+    mkdir -p "$EVIDENCE_DIR"
+    bash build/with-builder.sh make hotfix2-validate 2>&1 | tee "$EVIDENCE_DIR/validation.log"
+  workingDirectory: '$(Pipeline.Workspace)/s/operator'
+  displayName: Qualify retained controller, trust, chart and scan
+  env:
+    SOURCE_REVISION: $(Build.SourceVersion)
+    BUILD_URL: '$(System.CollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)'
+    BUILDSTEPS_DIR: $(Pipeline.Workspace)/s/BuildSteps
+- ${{ if eq(parameters.publish, true) }}:
+  - bash: make hotfix2-publish
+    workingDirectory: '$(Pipeline.Workspace)/s/operator'
+    displayName: Publish exact qualified image and chart
+    condition: succeeded()
+    env:
+      PUBLISH: 'true'
+      SOURCE_REVISION: $(Build.SourceVersion)
+- task: Docker@2
+  condition: always()
+  inputs:
+    command: logout
+    containerRegistry: quixcontainerregistry
+- task: PublishBuildArtifacts@1
+  condition: succeededOrFailed()
+  inputs:
+    PathtoPublish: '$(Build.ArtifactStagingDirectory)/operator'
+    ArtifactName: operator-qualification
